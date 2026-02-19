@@ -19,6 +19,10 @@ rand = "0.8.5"
 csv = "1.3.1"
 config = "0.15.8"
 
+[features]
+default = ["correctness-check"]
+correctness-check = []
+
 [[bin]]
 name = "client"
 path = "src/client/main.rs"

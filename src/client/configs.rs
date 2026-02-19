@@ -13,6 +13,9 @@ pub struct ClientConfig {
     pub sync_time: Option<Timestamp>,
     pub summary_filepath: String,
     pub output_filepath: String,
+    #[cfg(feature = "correctness-check")]
+    #[serde(default)]
+    pub history_output_path: Option<String>,
 }
 
 impl ClientConfig {
