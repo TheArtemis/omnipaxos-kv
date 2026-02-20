@@ -117,12 +117,40 @@ pub mod kv {
 
 pub mod utils {
     use super::messages::*;
+    use serde::{Deserialize, Serialize};
     use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
     use tokio::net::TcpStream;
     use tokio_serde::{formats::Bincode, Framed};
     use tokio_util::codec::{Framed as CodecFramed, FramedRead, FramedWrite, LengthDelimitedCodec};
 
     pub type Timestamp = i64;
+
+    // Clock simulation parameters(from config files)
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct ClockConfig {
+        #[serde(default = "ClockConfig::default_drift_rate")]
+        pub drift_rate: f64,
+        #[serde(default = "ClockConfig::default_uncertainty_bound")]
+        pub uncertainty_bound: f64,
+        #[serde(default = "ClockConfig::default_sync_freq")]
+        pub sync_freq: f64,
+    }
+
+    impl ClockConfig {
+        fn default_drift_rate() -> f64 { 1.0 }
+        fn default_uncertainty_bound() -> f64 { 0.001 }
+        fn default_sync_freq() -> f64 { 1.0 }
+    }
+
+    impl Default for ClockConfig {
+        fn default() -> Self {
+            Self {
+                drift_rate: Self::default_drift_rate(),
+                uncertainty_bound: Self::default_uncertainty_bound(),
+                sync_freq: Self::default_sync_freq(),
+            }
+        }
+    }
 
     pub type RegistrationConnection = Framed<
         CodecFramed<TcpStream, LengthDelimitedCodec>,
