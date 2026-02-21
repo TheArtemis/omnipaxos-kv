@@ -52,7 +52,7 @@ impl ClockSim{
     }
 
     // I have some doubts here related to how rust treats variables passed by value
-    pub fn get_uncertainty(self) -> f64{
+    pub fn get_uncertainty(&self) -> f64{
         self.uncertainty_bound
     }
 
