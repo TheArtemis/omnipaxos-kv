@@ -17,13 +17,14 @@ impl ClockSim{
         assert!(sync_freq > 0.0, "sync_freq must be > 0.0");
         let interval = 1.0 / sync_freq; // obtain sync time from frequency
         let sync_interval = Duration::from_secs_f64(interval);
+        let now = Instant::now();
 
-        Self { start_instant: Instant::now(),
+        Self { start_instant: now,
             base_offset: 0,
             drift_rate: drift,
             uncertainty_bound: epsilon,
             sync_interval, 
-            last_sync_time: Instant::now() 
+            last_sync_time: now 
         }
     }
 
@@ -34,9 +35,8 @@ impl ClockSim{
             self.synchronize(now); 
         }
 
-        
-        let real_elapsed = now.duration_since(self.start_instant).as_micros() as f64;
-        let simulated = (self.base_offset as f64) + (real_elapsed * self.drift_rate);
+        let elapsed_since_last_sync = now.duration_since(self.last_sync_time).as_micros() as f64;
+        let simulated = (self.base_offset as f64) + (elapsed_since_last_sync * self.drift_rate);
         simulated as u64
     }
 
