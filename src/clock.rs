@@ -14,6 +14,7 @@ pub struct ClockSim{
 impl ClockSim{
 
     pub fn new(drift: f64, epsilon: f64, sync_freq: f64) -> Self{
+        assert!(sync_freq > 0.0, "sync_freq must be > 0.0");
         let interval = 1.0 / sync_freq; // obtain sync time from frequency
         let sync_interval = Duration::from_secs_f64(interval);
 
