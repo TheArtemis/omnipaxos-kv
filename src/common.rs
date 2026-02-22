@@ -117,6 +117,7 @@ pub mod kv {
 
 pub mod utils {
     use super::messages::*;
+    use serde::{Deserialize, Serialize};
     use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
     use tokio::net::TcpStream;
     use tokio_serde::{formats::Bincode, Framed};

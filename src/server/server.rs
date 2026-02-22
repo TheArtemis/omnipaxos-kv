@@ -6,7 +6,10 @@ use omnipaxos::{
     util::{LogEntry, NodeId},
     OmniPaxos, OmniPaxosConfig,
 };
-use omnipaxos_kv::common::{kv::*, messages::*, utils::Timestamp};
+use omnipaxos_kv::{
+    clock::ClockSim,
+    common::{kv::*, messages::*, utils::Timestamp},
+};
 use omnipaxos_storage::memory_storage::MemoryStorage;
 use std::{fs::File, io::Write, time::Duration};
 
@@ -24,6 +27,7 @@ pub struct OmniPaxosServer {
     omnipaxos_msg_buffer: Vec<Message<Command>>,
     config: OmniPaxosKVConfig,
     peers: Vec<NodeId>,
+    clock: ClockSim,
 }
 
 impl OmniPaxosServer {
@@ -42,6 +46,11 @@ impl OmniPaxosServer {
             omnipaxos,
             current_decided_idx: 0,
             omnipaxos_msg_buffer,
+            clock: ClockSim::new(
+                config.clock.drift_rate,
+                config.clock.uncertainty_bound,
+                config.clock.sync_freq,
+            ),
             peers: config.get_peers(config.local.server_id),
             config,
         }
