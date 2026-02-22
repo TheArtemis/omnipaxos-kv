@@ -27,7 +27,7 @@ pub struct OmniPaxosServer {
     omnipaxos_msg_buffer: Vec<Message<Command>>,
     config: OmniPaxosKVConfig,
     peers: Vec<NodeId>,
-    pub clock: ClockSim,
+    clock: ClockSim,
 }
 
 impl OmniPaxosServer {

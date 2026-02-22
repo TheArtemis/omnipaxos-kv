@@ -19,7 +19,7 @@ pub struct Client {
     active_server: NodeId,
     final_request_count: Option<usize>,
     next_request_id: usize,
-    pub clock: ClockSim,
+    clock: ClockSim,
 }
 
 impl Client {
