@@ -1,7 +1,8 @@
 use std::{env, time::Duration};
 
 use config::{Config, ConfigError, Environment, File};
-use omnipaxos_kv::common::{kv::NodeId, utils::{ClockConfig, Timestamp}};
+use omnipaxos_kv::common::{kv::NodeId, utils::Timestamp};
+use omnipaxos_kv::clock::ClockConfig;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

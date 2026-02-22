@@ -1,0 +1,10 @@
+# Fake config for clock tests
+location = "test"
+server_id = 1
+server_address = "127.0.0.1:8001"
+
+# Units: drift_rate (μs/s), uncertainty_bound (μs), sync_freq (Hz)
+[clock]
+drift_rate = 25
+uncertainty_bound = 50
+sync_freq = 200

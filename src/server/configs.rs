@@ -7,7 +7,7 @@ use omnipaxos::{
     ServerConfig as OmnipaxosServerConfig,
 };
 use serde::{Deserialize, Serialize};
-use omnipaxos_kv::common::utils::ClockConfig;
+use omnipaxos_kv::clock::ClockConfig;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ClusterConfig {
