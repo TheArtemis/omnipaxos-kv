@@ -73,7 +73,7 @@ impl ClockSim {
         self.last_sync_time = now;
     }
 
-    /// Returns the synchronization uncertainty ±ε in microseconds (μs).
+    /// Returns the synchronization uncertainty in microseconds (μs).
     /// True logical time lies in [get_time() - get_uncertainty(), get_time() + get_uncertainty()].
     pub fn get_uncertainty(&self) -> f64 {
             let now = Instant::now();
