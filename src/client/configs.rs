@@ -14,7 +14,6 @@ pub struct ClientConfig {
     pub sync_time: Option<Timestamp>,
     pub summary_filepath: String,
     pub output_filepath: String,
-    #[serde(default)]
     pub clock: ClockConfig,
 }
 

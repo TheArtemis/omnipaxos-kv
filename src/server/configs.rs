@@ -33,7 +33,6 @@ pub struct OmniPaxosKVConfig {
     pub local: LocalConfig,
     #[serde(flatten)]
     pub cluster: ClusterConfig,
-    #[serde(default)]
     pub clock: ClockConfig,
 }
 

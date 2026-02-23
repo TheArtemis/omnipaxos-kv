@@ -13,13 +13,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClockConfig {
     /// Drift rate in μs per second
-    #[serde(default = "ClockConfig::default_drift_rate")]
     pub drift_rate: f64,
     /// Sync uncertainty ±ε in μs (e.g. 10 = ±10μs, 1000 = ±1ms)
-    #[serde(default = "ClockConfig::default_uncertainty_bound")]
     pub uncertainty_bound: f64,
     /// Sync frequency in Hz (e.g. 1000 = 1ms interval, 100 = 10ms, 10 = 100ms)
-    #[serde(default = "ClockConfig::default_sync_freq")]
     pub sync_freq: f64,
 }
 
