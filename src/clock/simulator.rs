@@ -74,8 +74,10 @@ impl ClockSim {
     }
 
     /// Returns the synchronization uncertainty ±ε in microseconds (μs).
-    /// True logical time lies in [get_time() − ε, get_time() + ε].
+    /// True logical time lies in [get_time() - get_uncertainty(), get_time() + get_uncertainty()].
     pub fn get_uncertainty(&self) -> f64 {
-        self.uncertainty_bound
+            let now = Instant::now();
+            let elapsed_us = now.duration_since(self.last_sync_time).as_micros() as f64;
+            self.uncertainty_bound + self.drift_rate * (elapsed_us / 1_000_000.0)
     }
 }
