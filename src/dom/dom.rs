@@ -1,5 +1,6 @@
 use crate::dom::config::DomConfig;
-use crate::dom::request::{DomRequest, RequestIdx};
+use crate::dom::request::DomRequest;
+use crate::dom::RequestIdx;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::time::Instant;
