@@ -10,6 +10,8 @@ use omnipaxos_kv::{
     clock::ClockSim,
     common::{kv::*, messages::*, utils::Timestamp},
 };
+use omnipaxos_kv::dom::dom::Dom;
+use omnipaxos_kv::dom::config::DomConfig;
 use omnipaxos_storage::memory_storage::MemoryStorage;
 use std::{fs::File, io::Write, time::Duration};
 
@@ -22,6 +24,7 @@ pub struct OmniPaxosServer {
     id: NodeId,
     database: Database,
     network: Network,
+    dom: Dom,
     omnipaxos: OmniPaxosInstance,
     current_decided_idx: usize,
     omnipaxos_msg_buffer: Vec<Message<Command>>,
@@ -43,6 +46,8 @@ impl OmniPaxosServer {
             id: config.local.server_id,
             database: Database::new(),
             network,
+            // TODO: put a real proxy address
+            dom: Dom::new(DomConfig { proxy_address: String::new() }),
             omnipaxos,
             current_decided_idx: 0,
             omnipaxos_msg_buffer,
