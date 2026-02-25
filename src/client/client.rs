@@ -4,6 +4,7 @@ use log::*;
 use omnipaxos_kv::{
     clock::ClockSim,
     common::{kv::*, messages::*},
+    proxy::{config::ProxyConfig, proxy::Proxy},
 };
 use rand::Rng;
 use std::time::Duration;
@@ -15,6 +16,7 @@ pub struct Client {
     id: ClientId,
     network: Network,
     client_data: ClientData,
+    proxy: Proxy,
     config: ClientConfig,
     active_server: NodeId,
     final_request_count: Option<usize>,
@@ -24,15 +26,19 @@ pub struct Client {
 
 impl Client {
     pub async fn new(config: ClientConfig) -> Self {
-        let network = Network::new(
-            vec![(config.server_id, config.server_address.clone())],
-            NETWORK_BATCH_SIZE,
-        )
-        .await;
+        let target_servers = config
+            .get_target_servers()
+            .expect("Unable to resolve target servers for client");
+        let proxy = Proxy::new(ProxyConfig {
+            is_proxy_on: config.is_proxy_on,
+            target_servers: target_servers.iter().map(|(id, _)| *id).collect(),
+        });
+        let network = Network::new(target_servers, NETWORK_BATCH_SIZE).await;
         Client {
             id: config.server_id,
             network,
             client_data: ClientData::new(),
+            proxy,
             active_server: config.server_id,
             clock: ClockSim::new(
                 config.clock.drift_rate,
@@ -133,7 +139,13 @@ impl Client {
         };
         let request = ClientMessage::Append(self.next_request_id, cmd);
         debug!("Sending {request:?}");
-        self.network.send(self.active_server, request).await;
+        if self.proxy.multicast() {
+            self.network
+                .send_to_many(self.proxy.target_servers(), request)
+                .await;
+        } else {
+            self.network.send(self.active_server, request).await;
+        }
         self.client_data.new_request(is_write);
         self.next_request_id += 1;
     }
