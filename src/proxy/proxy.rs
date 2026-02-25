@@ -1,8 +1,8 @@
 use crate::proxy::config::ProxyConfig;
+use crate::common::kv::NodeId;
 
 pub struct Proxy {
-   config: ProxyConfig,
-
+    config: ProxyConfig,
 }
 
 impl Proxy {
@@ -10,11 +10,26 @@ impl Proxy {
         Self { config }
     }
 
-    //TODO:
+    pub fn is_on(&self) -> bool {
+        self.config.is_proxy_on
+    }
 
     // Multicast
+    
+    pub fn target_servers(&self) -> &[NodeId] {
+        &self.config.target_servers
+    }
 
-    // Super quorum check for the proxy
+    pub fn has_targets(&self) -> bool {
+        !self.config.target_servers.is_empty()
+    }
 
-    // Handle acknowledgement from the servers
+    pub fn multicast(&self) -> bool {
+        self.is_on() && self.has_targets()
+    }
+
+    // Super quorum check 
+
+    // Handle acknowledgments
+
 }

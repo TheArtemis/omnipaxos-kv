@@ -107,6 +107,12 @@ impl Network {
         }
     }
 
+    pub async fn send_to_many(&mut self, targets: &[NodeId], msg: ClientMessage) {
+        for target in targets {
+            self.send(*target, msg.clone()).await;
+        }
+    }
+
     // Removes all server connections and ends their corresponding tasks
     pub fn shutdown(&mut self) {
         let connection_count = self.server_connections.len();
