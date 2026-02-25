@@ -12,6 +12,7 @@ struct RequestData {
     request_time: Timestamp,
     write: bool,
     response_time: Option<Timestamp>,
+    response_count: usize,
 }
 
 pub struct ClientData {
@@ -32,14 +33,20 @@ impl ClientData {
             request_time: Utc::now().timestamp_millis(),
             write: is_write,
             response_time: None,
+            response_count: 0,
         };
         self.request_data.push(data);
     }
 
     pub fn new_response(&mut self, command_id: CommandId) {
         let response_time = Utc::now().timestamp_millis();
-        self.request_data[command_id].response_time = Some(response_time);
-        self.response_count += 1;
+        if let Some(request_data) = self.request_data.get_mut(command_id) {
+            if request_data.response_time.is_none() {
+                request_data.response_time = Some(response_time);
+            }
+            request_data.response_count += 1;
+            self.response_count += 1;
+        }
     }
 
     pub fn response_count(&self) -> usize {
