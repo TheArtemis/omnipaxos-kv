@@ -1,19 +1,17 @@
+use crate::common::kv::CommandId;
 use crate::dom::config::DomConfig;
-use crate::dom::request::DomRequest;
-use crate::dom::RequestIdx;
+use crate::dom::request::DomMessage;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
-use std::time::Instant;
 
 pub struct Dom {
     config: DomConfig,
 
-
-    // Early buffer with a priority queue (min-heap by deadline)
-    early_buffer: BinaryHeap<Reverse<(Instant, RequestIdx)>>,
+    // Early buffer: min-heap by DomMessage::deadline
+    early_buffer: BinaryHeap<Reverse<DomMessage>>,
     
     // Late buffer
-    late_buffer: HashMap<RequestIdx, DomRequest>,
+    late_buffer: HashMap<CommandId, DomMessage>,
 
     // Release messages job
 
