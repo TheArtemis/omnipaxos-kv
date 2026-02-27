@@ -1,10 +1,15 @@
 
 use omnipaxos_kv::clock::{ClockConfig, ClockSim};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 fn tests_data_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data")
+}
+
+fn spin_for(duration: Duration) {
+    let start = Instant::now();
+    while start.elapsed() < duration {}
 }
 
 #[test]
@@ -58,4 +63,34 @@ fn clock_config_from_file() {
     let t2 = clock.get_time();
     assert!(t2 >= t1);
     assert_eq!(clock.get_uncertainty(), 50.0);
+}
+
+#[test]
+fn clocks_with_different_drift_sync_to_same_time() {
+    // Very different drift rates, but synchronize frequently.
+    let mut fast = ClockSim::new(500_000.0, 0.0, 50.0); // +0.5s/s drift
+    let mut slow = ClockSim::new(-800_000.0, 0.0, 50.0); // -0.8s/s drift
+
+    // Let some time pass without a sync interval elapsing to observe drift.
+    spin_for(Duration::from_millis(5));
+    let t_fast = fast.get_time();
+    let t_slow = slow.get_time();
+    let drift_delta = t_fast.abs_diff(t_slow);
+    assert!(
+        drift_delta > 1_000,
+        "expected noticeable drift, got {drift_delta}μs"
+    );
+
+    println!("Drift delta: {drift_delta}μs");
+
+    // Advance time beyond the sync interval and read again to force resync.
+    spin_for(Duration::from_millis(25));
+    let t_fast_sync = fast.get_time();
+    let t_slow_sync = slow.get_time();
+    let sync_delta = t_fast_sync.abs_diff(t_slow_sync);
+    assert!(
+        sync_delta <= 5_000,
+        "expected synchronized times, got delta {sync_delta}μs"
+    );
+    println!("Sync delta: {sync_delta}μs");
 }
