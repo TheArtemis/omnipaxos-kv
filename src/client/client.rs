@@ -1,10 +1,7 @@
 use crate::{configs::ClientConfig, data_collection::ClientData, network::Network};
 use chrono::Utc;
 use log::*;
-use omnipaxos_kv::{
-    clock::ClockSim,
-    common::{kv::*, messages::*},
-};
+use omnipaxos_kv::common::{kv::*, messages::*};
 use rand::Rng;
 use std::time::Duration;
 use tokio::time::interval;
@@ -20,7 +17,6 @@ pub struct Client {
     active_server: NodeId,
     final_request_count: Option<usize>,
     next_request_id: usize,
-    clock: ClockSim,
 }
 
 impl Client {
@@ -45,11 +41,6 @@ impl Client {
             proxy_network,
             client_data: ClientData::new(),
             active_server: config.server_id,
-            clock: ClockSim::new(
-                config.clock.drift_rate,
-                config.clock.uncertainty_bound,
-                config.clock.sync_freq,
-            ),
             config,
             final_request_count: None,
             next_request_id: 0,
@@ -198,7 +189,6 @@ impl Client {
         let request = ClientMessage::Append(self.next_request_id, cmd);
         debug!("Sending {request:?}");
 
-        let _send_time = self.clock.get_time();
         if self.config.use_proxy {
             self.proxy_network
                 .as_mut()

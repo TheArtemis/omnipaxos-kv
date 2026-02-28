@@ -1,5 +1,6 @@
 use log::{info, warn};
 
+use crate::clock::ClockSim;
 use crate::common::kv::{ClientId, CommandId, NodeId};
 use crate::common::messages::{ClientMessage, ServerMessage};
 use crate::dom::request::DomMessage;
@@ -14,6 +15,7 @@ pub struct Proxy {
     config: ProxyConfig,
     network: Network,
     pending: HashMap<(ClientId, CommandId), ()>,
+    clock: ClockSim,
 }
 
 impl Proxy {
@@ -26,11 +28,17 @@ impl Proxy {
         )
         .parse()
         .expect("Invalid proxy listen address");
+        let clock_config = config.clock.clone();
         let network = Network::new(listen_address, servers, NETWORK_BATCH_SIZE).await;
         Self {
             config,
             network,
             pending: HashMap::new(),
+            clock: ClockSim::new(
+                clock_config.drift_rate,
+                clock_config.uncertainty_bound,
+                clock_config.sync_freq,
+            ),
         }
     }
 
@@ -71,7 +79,7 @@ impl Proxy {
                     self.pending.insert((client_id, *command_id), ());
                 }
             }
-            let send_time = 0;
+            let send_time = self.clock.get_time();
             let deadline = self.get_deadline(send_time);
             let dom_message = DomMessage::new(client_id, message, deadline, send_time);
 

@@ -27,6 +27,7 @@ pub struct ProxyConfig {
     pub proxy_listen_address: String,
     #[serde(default = "default_proxy_listen_port")]
     pub proxy_listen_port: u16,
+    pub clock: crate::clock::ClockConfig,
     #[serde(default)]
     pub initial_flexible_superquorum: Option<FlexibleQuorum>,
 }

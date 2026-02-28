@@ -6,11 +6,6 @@ use_proxy = true
 summary_filepath = "./logs/client-2.json"
 output_filepath = "./logs/client-2.csv"
 
-[clock]
-drift_rate = 50
-uncertainty_bound = 100
-sync_freq = 100
-
 # Defining TOML vector of (duration_sec, requests_per_sec, read_ratio) which determines the behavior of the client requests
 [[requests]]
 duration_sec = 5
