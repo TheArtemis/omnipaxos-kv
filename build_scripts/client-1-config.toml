@@ -1,7 +1,8 @@
 location = "local-1"
 server_id = 1 # the server to connect to
 server_address = "127.0.0.1:8001"
-use_proxy = false
+proxy_address = "127.0.0.1:9000"
+use_proxy = true
 summary_filepath = "./logs/client-1.json"
 output_filepath = "./logs/client-1.csv"
 
@@ -20,4 +21,3 @@ read_ratio = 0.25
 duration_sec = 5
 requests_per_sec = 10
 read_ratio = 0.25
-

@@ -3,7 +3,7 @@ pub mod messages {
     use serde::{Deserialize, Serialize};
 
     use super::{
-        kv::{Command, CommandId, KVCommand},
+        kv::{ClientId, Command, CommandId, KVCommand},
         utils::Timestamp,
     };
 
@@ -11,6 +11,8 @@ pub mod messages {
     pub enum RegistrationMessage {
         NodeRegister(NodeId),
         ClientRegister,
+        // Used by the proxy to distinguish its connection type on the server.
+        ProxyRegister,
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -29,6 +31,7 @@ pub mod messages {
         Write(CommandId),
         Read(CommandId, Option<String>),
         StartSignal(Timestamp),
+        ProxyResponse(ClientId, Box<ServerMessage>),
     }
 
     impl ServerMessage {
@@ -37,6 +40,7 @@ pub mod messages {
                 ServerMessage::Write(id) => *id,
                 ServerMessage::Read(id, _) => *id,
                 ServerMessage::StartSignal(_) => unimplemented!(),
+                ServerMessage::ProxyResponse(_, msg) => msg.command_id(),
             }
         }
     }

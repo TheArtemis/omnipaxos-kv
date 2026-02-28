@@ -1,9 +1,11 @@
-use crate::common::messages::ClientMessage;
+use crate::common::{kv::ClientId, messages::ClientMessage};
+use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 
 /// Ordered by `deadline` only (for use in priority queues).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DomMessage {
+    pub client_id: ClientId,
     pub message: ClientMessage,
     pub deadline: u64,
     pub send_time: u64,
@@ -31,11 +33,13 @@ impl Ord for DomMessage {
 
 impl DomMessage {
     pub fn new(
+        client_id: ClientId,
         message: ClientMessage,
         deadline: u64, // Will be set by the client
         send_time: u64, // Will be set by the client's clock simulator
     ) -> Self {
         Self {
+            client_id,
             message,
             deadline,
             send_time,

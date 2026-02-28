@@ -10,6 +10,7 @@ pub struct ClientConfig {
     pub location: String,
     pub server_id: NodeId,
     pub server_address: String,
+    pub proxy_address: String,
     pub use_proxy: bool,
     pub requests: Vec<RequestInterval>,
     pub sync_time: Option<Timestamp>,

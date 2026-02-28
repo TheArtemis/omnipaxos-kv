@@ -23,6 +23,10 @@ pub struct ProxyConfig {
     pub cluster_name: Option<String>,
     pub nodes: Vec<NodeId>,
     pub node_addrs: Vec<String>,
+    #[serde(default = "default_proxy_listen_address")]
+    pub proxy_listen_address: String,
+    #[serde(default = "default_proxy_listen_port")]
+    pub proxy_listen_port: u16,
     #[serde(default)]
     pub initial_flexible_superquorum: Option<FlexibleQuorum>,
 }
@@ -58,4 +62,12 @@ impl ProxyConfig {
             .map(|(id, address)| Server { id, address })
             .collect()
     }
+}
+
+fn default_proxy_listen_address() -> String {
+    "0.0.0.0".to_string()
+}
+
+fn default_proxy_listen_port() -> u16 {
+    9000
 }

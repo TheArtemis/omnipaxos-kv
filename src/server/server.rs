@@ -10,10 +10,11 @@ use omnipaxos_kv::{
     clock::ClockSim,
     common::{kv::*, messages::*, utils::Timestamp},
 };
+use omnipaxos_kv::dom::request::DomMessage;
 use omnipaxos_kv::dom::dom::Dom;
 use omnipaxos_kv::dom::config::DomConfig;
 use omnipaxos_storage::memory_storage::MemoryStorage;
-use std::{fs::File, io::Write, time::Duration};
+use std::{collections::HashSet, fs::File, io::Write, time::Duration};
 
 type OmniPaxosInstance = OmniPaxos<Command, MemoryStorage<Command>>;
 const NETWORK_BATCH_SIZE: usize = 100;
@@ -31,6 +32,7 @@ pub struct OmniPaxosServer {
     config: OmniPaxosKVConfig,
     peers: Vec<NodeId>,
     clock: ClockSim,
+    proxy_command_ids: HashSet<(ClientId, CommandId)>,
 }
 
 impl OmniPaxosServer {
@@ -58,6 +60,7 @@ impl OmniPaxosServer {
             ),
             peers: config.get_peers(config.local.server_id),
             config,
+            proxy_command_ids: HashSet::new(),
         }
     }
 
@@ -65,6 +68,7 @@ impl OmniPaxosServer {
         // Save config to output file
         self.save_output().expect("Failed to write to file");
         let mut client_msg_buf = Vec::with_capacity(NETWORK_BATCH_SIZE);
+        let mut proxy_msg_buf = Vec::with_capacity(NETWORK_BATCH_SIZE);
         let mut cluster_msg_buf = Vec::with_capacity(NETWORK_BATCH_SIZE);
         // We don't use Omnipaxos leader election at first and instead force a specific initial leader
         self.establish_initial_leader(&mut cluster_msg_buf, &mut client_msg_buf)
@@ -82,6 +86,9 @@ impl OmniPaxosServer {
                 },
                 _ = self.network.client_messages.recv_many(&mut client_msg_buf, NETWORK_BATCH_SIZE) => {
                     self.handle_client_messages(&mut client_msg_buf).await;
+                },
+                _ = self.network.proxy_messages.recv_many(&mut proxy_msg_buf, NETWORK_BATCH_SIZE) => {
+                    self.handle_proxy_messages(&mut proxy_msg_buf).await;
                 },
             }
         }
@@ -155,7 +162,16 @@ impl OmniPaxosServer {
                     Some(read_result) => ServerMessage::Read(command.id, read_result),
                     None => ServerMessage::Write(command.id),
                 };
-                self.network.send_to_client(command.client_id, response);
+                if self
+                    .proxy_command_ids
+                    .remove(&(command.client_id, command.id))
+                {
+                    let proxy_msg =
+                        ServerMessage::ProxyResponse(command.client_id, Box::new(response));
+                    self.network.send_to_proxy(proxy_msg);
+                } else {
+                    self.network.send_to_client(command.client_id, response);
+                }
             }
         }
     }
@@ -175,6 +191,20 @@ impl OmniPaxosServer {
             match message {
                 ClientMessage::Append(command_id, kv_command) => {
                     self.append_to_log(from, command_id, kv_command)
+                }
+            }
+        }
+        self.send_outgoing_msgs();
+    }
+
+    async fn handle_proxy_messages(&mut self, messages: &mut Vec<DomMessage>) {
+
+        // TODO: here we should add the dom logic for the fast/slow path
+        for message in messages.drain(..) {
+            match message.message {
+                ClientMessage::Append(command_id, kv_command) => {
+                    self.proxy_command_ids.insert((message.client_id, command_id));
+                    self.append_to_log(message.client_id, command_id, kv_command)
                 }
             }
         }
@@ -225,10 +255,16 @@ impl OmniPaxosServer {
     }
 
     fn send_client_start_signals(&mut self, start_time: Timestamp) {
+        if self.config.local.use_proxy {
+            self.network.set_start_signal(start_time);
+        }
         for client_id in 1..self.config.local.num_clients as ClientId + 1 {
             debug!("Sending start message to client {client_id}");
             let msg = ServerMessage::StartSignal(start_time);
             self.network.send_to_client(client_id, msg);
+        }
+        if self.config.local.use_proxy {
+            self.network.send_to_proxy(ServerMessage::StartSignal(start_time));
         }
     }
 

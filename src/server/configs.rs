@@ -15,6 +15,9 @@ pub struct ClusterConfig {
     pub node_addrs: Vec<String>,
     pub initial_leader: NodeId,
     pub initial_flexible_quorum: Option<FlexibleQuorum>,
+    /// Used by proxy (e.g. superquorum); server ignores.
+    #[serde(default)]
+    pub initial_flexible_superquorum: Option<FlexibleQuorum>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -24,6 +27,9 @@ pub struct LocalConfig {
     pub listen_address: String,
     pub listen_port: u16,
     pub num_clients: usize,
+    pub proxy_address: String,
+    #[serde(default)]
+    pub use_proxy: bool,
     pub output_filepath: String,
 }
 
