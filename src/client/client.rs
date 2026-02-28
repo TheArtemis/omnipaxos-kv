@@ -3,8 +3,7 @@ use chrono::Utc;
 use log::*;
 use omnipaxos_kv::{
     clock::ClockSim,
-    common::{kv::*, messages::*},
-    proxy::{config::ProxyConfig, proxy::Proxy},
+    common::{kv::*, messages::*}, proxy::proxy::Proxy,
 };
 use rand::Rng;
 use std::time::Duration;
@@ -16,35 +15,32 @@ pub struct Client {
     id: ClientId,
     network: Network,
     client_data: ClientData,
-    proxy: Proxy,
     config: ClientConfig,
     active_server: NodeId,
     final_request_count: Option<usize>,
     next_request_id: usize,
+    proxy: Proxy,
     clock: ClockSim,
 }
 
 impl Client {
     pub async fn new(config: ClientConfig) -> Self {
-        let target_servers = config
-            .get_target_servers()
-            .expect("Unable to resolve target servers for client");
-        let proxy = Proxy::new(ProxyConfig {
-            is_proxy_on: config.is_proxy_on,
-            target_servers: target_servers.iter().map(|(id, _)| *id).collect(),
-        });
-        let network = Network::new(target_servers, NETWORK_BATCH_SIZE).await;
+        let network = Network::new(
+            vec![(config.server_id, config.server_address.clone())],
+            NETWORK_BATCH_SIZE,
+        )
+        .await;
         Client {
             id: config.server_id,
             network,
             client_data: ClientData::new(),
-            proxy,
             active_server: config.server_id,
             clock: ClockSim::new(
                 config.clock.drift_rate,
                 config.clock.uncertainty_bound,
                 config.clock.sync_freq,
             ),
+            proxy: Proxy::from_cluster_config().unwrap_or_else(|_| panic!("Failed to create proxy")),
             config,
             final_request_count: None,
             next_request_id: 0,
@@ -139,15 +135,24 @@ impl Client {
         };
         let request = ClientMessage::Append(self.next_request_id, cmd);
         debug!("Sending {request:?}");
-        if self.proxy.multicast() {
-            self.network
-                .send_to_many(self.proxy.target_servers(), request)
-                .await;
-        } else {
+
+        // If not using proxy, send to server directly. (DEFAULT)
+        if !self.config.use_proxy{
             self.network.send(self.active_server, request).await;
+            
+
+        } else {
+            // If using proxy, send to proxy instead of server.
+            // Since we are simulating the proxy we will just call the proxy's send method directly.
+        
+            let send_time = self.clock.get_time(); 
+            self.proxy.send(request, send_time);
         }
+        
+
+        // Update client data
         self.client_data.new_request(is_write);
-        self.next_request_id += 1;
+        self.next_request_id += 1
     }
 
     fn run_finished(&self) -> bool {

@@ -6,20 +6,11 @@ use omnipaxos_kv::clock::ClockConfig;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-struct ClusterDiscoveryConfig {
-    pub nodes: Vec<NodeId>,
-    pub node_addrs: Vec<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ClientConfig {
     pub location: String,
     pub server_id: NodeId,
     pub server_address: String,
-    #[serde(default, rename = "isProxyOn")]
-    pub is_proxy_on: bool,
-    #[serde(default, rename = "clusterConfigFile")]
-    pub cluster_config_file: Option<String>,
+    pub use_proxy: bool,
     pub requests: Vec<RequestInterval>,
     pub sync_time: Option<Timestamp>,
     pub summary_filepath: String,
@@ -41,36 +32,6 @@ impl ClientConfig {
         config.try_deserialize()
     }
 
-    pub fn get_target_servers(&self) -> Result<Vec<(NodeId, String)>, ConfigError> {
-        if !self.is_proxy_on {
-            return Ok(vec![(self.server_id, self.server_address.clone())]);
-        }
-
-        let cluster_config_file = self
-            .cluster_config_file
-            .clone()
-            .or_else(|| env::var("CLUSTER_CONFIG_FILE").ok())
-            .unwrap_or_else(|| "build_scripts/cluster-config.toml".to_string());
-
-        let cluster_cfg: ClusterDiscoveryConfig = Config::builder()
-            .add_source(File::with_name(&cluster_config_file))
-            .build()?
-            .try_deserialize()?;
-
-        if cluster_cfg.nodes.len() != cluster_cfg.node_addrs.len() {
-            panic!(
-                "Cluster config mismatch: nodes({}) != node_addrs({})",
-                cluster_cfg.nodes.len(),
-                cluster_cfg.node_addrs.len()
-            );
-        }
-
-        Ok(cluster_cfg
-            .nodes
-            .into_iter()
-            .zip(cluster_cfg.node_addrs)
-            .collect())
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]

@@ -1,8 +1,7 @@
 location = "local-2"
 server_id = 2 # the server to connect to
 server_address = "127.0.0.1:8002"
-isProxyOn = false
-clusterConfigFile = "./cluster-config.toml"
+use_proxy = false
 summary_filepath = "./logs/client-2.json"
 output_filepath = "./logs/client-2.csv"
 
