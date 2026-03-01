@@ -665,6 +665,7 @@ dependencies = [
 name = "omnipaxos-kv"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "chrono",
  "config",
  "csv",
@@ -676,6 +677,7 @@ dependencies = [
  "rand",
  "serde",
  "serde_json",
+ "sha1",
  "tokio",
  "tokio-serde",
  "tokio-util",
@@ -1001,6 +1003,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "87607cb1398ed59d48732e575a4c28a7a8ebf2454b964fe3f224f2afc07909e1"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "sha1"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3bf829a2d51ab4a5ddf1352d8470c140cadc8301b2ae1789db023f01cedd6ba"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
 ]
 
 [[package]]
