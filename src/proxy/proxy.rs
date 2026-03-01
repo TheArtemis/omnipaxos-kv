@@ -2,7 +2,10 @@ use log::{info, warn};
 
 use crate::clock::ClockSim;
 use crate::common::kv::{ClientId, CommandId, NodeId};
-use crate::common::messages::{ClientMessage, ServerMessage};
+use crate::common::messages::{
+    ClientMessage, FastReply, FastReplyResult, ServerMessage,
+};
+use omnipaxos::ballot_leader_election::Ballot;
 use crate::dom::request::DomMessage;
 use crate::proxy::config::{ProxyConfig, Server};
 use crate::proxy::network::Network;
@@ -11,10 +14,17 @@ use std::net::SocketAddr;
 
 const NETWORK_BATCH_SIZE: usize = 100;
 
+/// Reply set for one (client_id, request_id): current ballot and replies from replicas.
+struct ReplySetState {
+    current_ballot: Ballot,
+    replies: Vec<FastReply>,
+}
+
 pub struct Proxy {
     config: ProxyConfig,
     network: Network,
     pending: HashMap<(ClientId, CommandId), ()>,
+    reply_sets: HashMap<(ClientId, CommandId), ReplySetState>,
     clock: ClockSim,
 }
 
@@ -34,6 +44,7 @@ impl Proxy {
             config,
             network,
             pending: HashMap::new(),
+            reply_sets: HashMap::new(),
             clock: ClockSim::new(
                 clock_config.drift_rate,
                 clock_config.uncertainty_bound,
@@ -108,6 +119,9 @@ impl Proxy {
                 ServerMessage::StartSignal(_) => {
                     self.network.send_to_all_clients(message);
                 }
+                ServerMessage::FastReply(fast_reply) => {
+                    self.handle_fast_reply(fast_reply);
+                }
                 other => {
                     warn!("Unexpected server message on proxy connection: {other:?}");
                 }
@@ -117,5 +131,118 @@ impl Proxy {
 
     fn get_deadline(&self, send_time: u64) -> u64 {
         send_time + 1000 // TODO change this!!!
+    }
+
+    // Todo. I think we can write it cleaner but im tired :,)
+    // Also, can we directly use the ballot number instead of the whole ballot object?
+
+    fn handle_fast_reply(&mut self, reply: FastReply) {
+        let key = (reply.client_id, reply.request_id);
+        let n = self.config.targets().len();
+        if n == 0 {
+            return;
+        }
+        let f = (n - 1) / 2;
+        let replica_ids: Vec<NodeId> = self.config.targets().iter().map(|s| s.id).collect();
+
+        let state = self
+            .reply_sets
+            .entry(key)
+            .or_insert_with(|| ReplySetState {
+                current_ballot: reply.ballot.clone(),
+                replies: Vec::new(),
+            });
+
+        // 1. Duplicate or previous ballot
+        if reply.ballot < state.current_ballot {
+            return;
+        }
+        if state.replies.iter().any(|r| r.replica_id == reply.replica_id) {
+            return;
+        }
+
+        // 2. New ballot
+        if reply.ballot > state.current_ballot {
+            state.current_ballot = reply.ballot.clone();
+            state.replies.clear();
+        }
+        // 3. Same ballot: insert
+        state.replies.push(reply.clone());
+
+        // 4. Check committed
+        if let Some(leader_reply) =
+            Self::check_committed(&reply, &state.replies, n, f, &replica_ids)
+        {
+            self.reply_to_client(leader_reply, key);
+        }
+    }
+
+    /// Deterministic leader for a ballot: same ballot => same leader index.
+    fn leader_from_ballot(ballot: &Ballot, replica_ids: &[NodeId]) -> NodeId {
+        let bytes = bincode::serialize(ballot).expect("Ballot serialization");
+        let idx = bytes
+            .iter()
+            .fold(0usize, |a, &b| a.wrapping_add(b as usize))
+            % replica_ids.len();
+        replica_ids[idx]
+    }
+
+    fn check_committed(
+        reply: &FastReply,
+        replies: &[FastReply],
+        n: usize,
+        f: usize,
+        replica_ids: &[NodeId],
+    ) -> Option<FastReply> {
+        let quorum: Vec<&FastReply> = replies
+            .iter()
+            .filter(|r| {
+                r.ballot == reply.ballot
+                    && r.client_id == reply.client_id
+                    && r.request_id == reply.request_id
+            })
+            .collect();
+
+        let leader_node_id = Self::leader_from_ballot(&reply.ballot, replica_ids);
+        let leader_reply: FastReply = quorum
+            .iter()
+            .find(|r| r.replica_id == leader_node_id && r.is_leader_reply())
+            .map(|r| (*r).clone())?;
+
+        let mut fast_reply_num = 0usize;
+        let mut slow_reply_num = 0usize;
+        for r in 0..n {
+            let rid = replica_ids[r];
+            let replica_reply = quorum.iter().find(|msg| msg.replica_id == rid);
+            if let Some(rr) = replica_reply {
+                if rr.is_replica_reply() {
+                    slow_reply_num += 1;
+                    fast_reply_num += 1;
+                } else if rr.hash == leader_reply.hash {
+                    fast_reply_num += 1;
+                }
+            }
+        }
+
+        let fast_quorum_size = 1 + f + (f + 1) / 2; // 1 + f + ceil(f/2)
+        if fast_reply_num >= fast_quorum_size {
+            return Some(leader_reply);
+        }
+        if slow_reply_num >= f {
+            return Some(leader_reply);
+        }
+        None
+    }
+
+    fn reply_to_client(&mut self, committed: FastReply, key: (ClientId, CommandId)) {
+        let client_id = committed.client_id;
+        let msg = match committed.result {
+            Some(FastReplyResult::Read(cmd_id, value)) => ServerMessage::Read(cmd_id, value),
+            Some(FastReplyResult::Write(cmd_id)) => ServerMessage::Write(cmd_id),
+            None => return,
+        };
+        self.pending.remove(&key);
+        self.reply_sets.remove(&key);
+        self.network.send_to_client(client_id, msg);
     }
 }
