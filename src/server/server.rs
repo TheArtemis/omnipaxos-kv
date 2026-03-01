@@ -6,10 +6,7 @@ use omnipaxos::{
     util::{LogEntry, NodeId},
     OmniPaxos, OmniPaxosConfig,
 };
-use omnipaxos_kv::{
-    clock::ClockSim,
-    common::{kv::*, messages::*, utils::Timestamp},
-};
+use omnipaxos_kv::common::{kv::*, messages::*, utils::Timestamp};
 use omnipaxos_kv::dom::request::DomMessage;
 use omnipaxos_kv::dom::dom::Dom;
 use omnipaxos_kv::dom::config::DomConfig;
@@ -31,7 +28,6 @@ pub struct OmniPaxosServer {
     omnipaxos_msg_buffer: Vec<Message<Command>>,
     config: OmniPaxosKVConfig,
     peers: Vec<NodeId>,
-    clock: ClockSim,
     proxy_command_ids: HashSet<(ClientId, CommandId)>,
 }
 
@@ -48,16 +44,13 @@ impl OmniPaxosServer {
             id: config.local.server_id,
             database: Database::new(),
             network,
-            // TODO: put a real proxy address
-            dom: Dom::new(DomConfig { proxy_address: String::new() }),
+            dom: Dom::new(DomConfig {
+                proxy_address: String::new(),
+                clock: config.clock.clone(),
+            }),
             omnipaxos,
             current_decided_idx: 0,
             omnipaxos_msg_buffer,
-            clock: ClockSim::new(
-                config.clock.drift_rate,
-                config.clock.uncertainty_bound,
-                config.clock.sync_freq,
-            ),
             peers: config.get_peers(config.local.server_id),
             config,
             proxy_command_ids: HashSet::new(),
@@ -198,15 +191,23 @@ impl OmniPaxosServer {
     }
 
     async fn handle_proxy_messages(&mut self, messages: &mut Vec<DomMessage>) {
-
-        // TODO: here we should add the dom logic for the fast/slow path
         for message in messages.drain(..) {
+
+            // Let the dom handle the message
+            self.dom.push_by_deadline(message.clone());
+
             match message.message {
-                ClientMessage::Append(command_id, kv_command) => {
+                ClientMessage::Append(command_id, _) => {
+                    self.proxy_command_ids.insert((message.client_id, command_id));
+                }
+            }
+            
+            /* match message.message {       
+            ClientMessage::Append(command_id, kv_command) => {
                     self.proxy_command_ids.insert((message.client_id, command_id));
                     self.append_to_log(message.client_id, command_id, kv_command)
                 }
-            }
+            } */
         }
         self.send_outgoing_msgs();
     }

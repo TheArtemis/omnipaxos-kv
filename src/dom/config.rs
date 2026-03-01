@@ -7,4 +7,5 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DomConfig {
     pub proxy_address: String,
+    pub clock: crate::clock::ClockConfig,
 }

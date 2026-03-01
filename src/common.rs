@@ -26,6 +26,14 @@ pub mod messages {
         Append(CommandId, KVCommand),
     }
 
+    impl ClientMessage {
+        pub fn command_id(&self) -> CommandId {
+            match self {
+                ClientMessage::Append(id, _) => *id,
+            }
+        }
+    }
+
     #[derive(Clone, Debug, Serialize, Deserialize)]
     pub enum ServerMessage {
         Write(CommandId),
