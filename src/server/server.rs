@@ -6,7 +6,7 @@ use omnipaxos::{
     util::{LogEntry, NodeId},
     OmniPaxos, OmniPaxosConfig,
 };
-use omnipaxos_kv::common::{kv::*, messages::*, utils::Timestamp};
+use omnipaxos_kv::common::{kv::*, log_hash::LogHash, messages::*, utils::Timestamp};
 use omnipaxos_kv::dom::request::DomMessage;
 use omnipaxos_kv::dom::dom::Dom;
 use omnipaxos_kv::dom::config::DomConfig;
@@ -29,6 +29,7 @@ pub struct OmniPaxosServer {
     config: OmniPaxosKVConfig,
     peers: Vec<NodeId>,
     proxy_command_ids: HashSet<(ClientId, CommandId)>,
+    log_hash: LogHash,
 }
 
 impl OmniPaxosServer {
@@ -53,6 +54,7 @@ impl OmniPaxosServer {
             peers: config.get_peers(config.local.server_id),
             config,
             proxy_command_ids: HashSet::new(),
+            log_hash: LogHash::new(),
         }
     }
 
@@ -68,6 +70,9 @@ impl OmniPaxosServer {
         // Main event loop with leader election
         let mut election_interval = tokio::time::interval(ELECTION_TIMEOUT);
         loop {
+            // Compute when the next deadline is
+            let duration = self.dom.duration_until_next_deadline();
+            let mut deadline_sleep = duration.map(|d| Box::pin(tokio::time::sleep(d)));
             tokio::select! {
                 _ = election_interval.tick() => {
                     self.omnipaxos.tick();
@@ -82,9 +87,44 @@ impl OmniPaxosServer {
                 _ = self.network.proxy_messages.recv_many(&mut proxy_msg_buf, NETWORK_BATCH_SIZE) => {
                     self.handle_proxy_messages(&mut proxy_msg_buf).await;
                 },
+                _ = async {
+                    match &mut deadline_sleep {
+                        Some(s) => s.as_mut().await,
+                        None => std::future::pending::<()>().await,
+                    }
+                }, if deadline_sleep.is_some() => {
+                    let due = self.dom.handle_deadline();
+                    for msg in due {
+                        match msg.message {
+                            ClientMessage::Append(command_id, kv_command) => {
+                                let command = Command {
+                                    client_id: msg.client_id,
+                                    coordinator_id: self.id,
+                                    id: command_id,
+                                    kv_cmd: kv_command,
+                                };
+
+                                // Update the log hash with the command
+                                self.log_hash.add_entry(&command);
+
+
+                                // If we are the leader, update the database and respond with a fast reply
+                                if self.id == self.omnipaxos.get_current_leader().unwrap().0 {
+                                    self.update_database_and_respond_fast(command);
+                                }
+                                else {
+                                    self.respond_fast(command);
+                                }
+
+                            }
+                        }
+                    }
+                    self.send_outgoing_msgs();
+                },
             }
         }
     }
+    
 
     // Ensures cluster is connected and initial leader is promoted before returning.
     // Once the leader is established it chooses a synchronization point which the
@@ -141,6 +181,11 @@ impl OmniPaxosServer {
                     _ => unreachable!(),
                 })
                 .collect();
+
+            // Update the log hash with the decided commands
+            for cmd in &decided_commands {
+                self.log_hash.add_entry(cmd);
+            }
             self.update_database_and_respond(decided_commands);
         }
     }
@@ -167,6 +212,49 @@ impl OmniPaxosServer {
             }
         }
     }
+
+    fn update_database_and_respond_fast(&mut self, command: Command) {
+        let read = self.database.handle_command(command.kv_cmd);
+        let ballot = self.omnipaxos.get_promise();
+        let fast_reply = FastReply {
+            ballot,
+            replica_id: self.id,
+            client_id: command.client_id,
+            request_id: command.id,
+            result: match read {
+                Some(read_result) => Some(FastReplyResult::Read(command.id, read_result)),
+                None => Some(FastReplyResult::Write(command.id)),
+            },
+            hash: self.log_hash.clone(),
+        };
+
+        let msg = ServerMessage::FastReply(fast_reply);
+        if self.proxy_command_ids.remove(&(command.client_id, command.id)) {
+            self.network.send_to_proxy(msg);
+        } else {
+            let client_id = command.client_id;
+            let cmd_id = command.id;
+            warn!("No proxy command id found for fast reply to client {client_id} with command id {cmd_id}");
+        }
+    }
+
+    // Replicas just respond with a fast reply without updating the database
+    fn respond_fast(&mut self, command: Command) {
+        let ballot = self.omnipaxos.get_promise();
+        let fast_reply = FastReply {
+            ballot,
+            replica_id: self.id,
+            client_id: command.client_id,
+            request_id: command.id,
+            result: None,
+            hash: self.log_hash.clone(),
+        };
+
+        let msg = ServerMessage::FastReply(fast_reply);
+        // Since we have not executed the command we still keep it in the proxy command ids
+        self.network.send_to_proxy(msg);
+    }
+
 
     fn send_outgoing_msgs(&mut self) {
         self.omnipaxos

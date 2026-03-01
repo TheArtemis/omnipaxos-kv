@@ -4,6 +4,7 @@ use crate::dom::config::DomConfig;
 use crate::dom::request::DomMessage;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
+use std::time::Duration;
 
 pub struct Dom {
     config: DomConfig,
@@ -40,6 +41,10 @@ impl Dom {
         }
     }
 
+    pub fn get_next_deadline(&self) -> Option<u64> {
+        self.early_buffer.peek().map(|Reverse(message)| message.deadline)
+    }
+
     pub fn push_by_deadline(&mut self, message: DomMessage) {
         let now = self.clock.get_time();
         if message.deadline <= now {
@@ -58,4 +63,27 @@ impl Dom {
         self.early_buffer.push(Reverse(message));
     }
 
+    /// Returns how long to wait (real time) until the next deadline, or `None` if no deadline.
+    /// Caller should wake immediately when the returned duration is zero.
+    pub fn duration_until_next_deadline(&mut self) -> Option<Duration> {
+        let deadline = self.get_next_deadline()?;
+        let now = self.clock.get_time();
+        let delta = deadline.saturating_sub(now);
+        Some(Duration::from_micros(delta))
+    }
+
+    /// Pops all messages from the early buffer whose deadline has been reached.
+    /// Caller is responsible for appending to the log and updating proxy_command_ids.
+    pub fn handle_deadline(&mut self) -> Vec<DomMessage> {
+        let now = self.clock.get_time();
+        let mut due = Vec::new();
+        while let Some(Reverse(msg)) = self.early_buffer.peek() {
+            if msg.deadline > now {
+                break;
+            }
+            due.push(self.early_buffer.pop().unwrap().0);
+        }
+        due
+    }
+        
 }
