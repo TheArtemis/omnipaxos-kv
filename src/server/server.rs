@@ -45,7 +45,6 @@ impl OmniPaxosServer {
             database: Database::new(),
             network,
             dom: Dom::new(DomConfig {
-                proxy_address: String::new(),
                 clock: config.clock.clone(),
             }),
             omnipaxos,
