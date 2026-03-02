@@ -1,4 +1,4 @@
-use crate::clock::ClockSim;
+use crate::clock::{self, ClockSim};
 use crate::common::kv::{ClientId, CommandId};
 use crate::dom::config::DomConfig;
 use crate::dom::request::DomMessage;
@@ -16,6 +16,9 @@ pub struct Dom {
     late_buffer: HashMap<(ClientId, CommandId), DomMessage>,
 
     clock: ClockSim,
+
+    // moment in time where the last message from the early buffer has been released
+    last_released_command: u64
 
     // Release messages job
 
@@ -38,6 +41,7 @@ impl Dom {
             early_buffer: BinaryHeap::new(),
             late_buffer: HashMap::new(),
             clock,
+            last_released_command: 0,
         }
     }
 
@@ -47,8 +51,7 @@ impl Dom {
 
     pub fn push_by_deadline(&mut self, message: DomMessage) {
         // TODO: MODIFY THE if statement to check if the message is late or early
-        let now = self.clock.get_time();
-        if message.deadline <= now {
+        if message.deadline > self.last_released_command {
             self.push_to_early_buffer(message);
         } else {
             self.push_to_late_buffer(message);
@@ -83,6 +86,7 @@ impl Dom {
                 break;
             }
             due.push(self.early_buffer.pop().unwrap().0);
+            self.last_released_command = self.clock.get_time();
         }
         due
     }
