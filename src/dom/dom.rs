@@ -18,7 +18,7 @@ pub struct Dom {
     clock: ClockSim,
 
     // moment in time where the last message from the early buffer has been released
-    last_released_command: u64
+    last_released_command: u64, 
 
     // Release messages job
 
@@ -45,6 +45,29 @@ impl Dom {
         }
     }
 
+    // Needed to verify whether late_buffer is empty 
+    pub fn get_late_buffer_size(&self) -> u64{
+        self.late_buffer.len() as u64
+    }
+
+    // Implemented for testing
+    pub fn get_early_buffer_size(&self) -> u64{
+        self.early_buffer.len() as u64
+    }
+
+    // pop from late buffer
+    pub fn pop_from_late_buffer(&mut self) -> Option<DomMessage> {
+        // find the entry with the smallest deadline and remove it from the late buffer
+        if let Some((key, _)) = self.late_buffer.iter().min_by_key(|(_, msg)| msg.deadline) {
+            // Copy the key before mutating the map to avoid overlapping borrows.
+            let key = *key;
+            let (_k, v) = self.late_buffer.remove_entry(&key)?;
+            return Some(v);
+        }
+        None
+    }
+
+
     pub fn get_next_deadline(&self) -> Option<u64> {
         self.early_buffer.peek().map(|Reverse(message)| message.deadline)
     }
@@ -66,6 +89,7 @@ impl Dom {
     pub fn push_to_early_buffer(&mut self, message: DomMessage) {
         self.early_buffer.push(Reverse(message));
     }
+
 
     /// Returns how long to wait (real time) until the next deadline, or `None` if no deadline.
     /// Caller should wake immediately when the returned duration is zero.

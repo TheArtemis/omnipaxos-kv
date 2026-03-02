@@ -321,12 +321,35 @@ impl OmniPaxosServer {
         self.send_outgoing_msgs();
     }
 
+    // TODO: test this, still not sure if it goes through all of omnipaxos
     async fn handle_proxy_messages(&mut self, messages: &mut Vec<ProxyMessage>) {
         for proxy_msg in messages.drain(..) {
             match proxy_msg {
                 ProxyMessage::Append(dom_message) => {
                     // Let the dom handle the message
                     self.dom.push_by_deadline(dom_message.clone());
+
+                    if let Some((leader_id, _)) = self.omnipaxos.get_current_leader() {
+                        if self.id == leader_id && self.dom.get_late_buffer_size() > 0 {
+                            // Extract one element from the Dom late buffer of the leader and start omnipaxos
+                            if let Some(dom_message) = self.dom.pop_from_late_buffer() {
+                                match dom_message.message {
+                                    ClientMessage::Append(command_id, kv_cmd) => {
+                                        // start omnipaxos and exit this function
+                                        self.append_to_log(dom_message.client_id, command_id, kv_cmd);
+                                        self.send_outgoing_msgs();
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    else {
+                        // remove elements from the late buffer of the followers
+                        if self.dom.get_late_buffer_size() > 0{
+                            let bin = self.dom.get_late_buffer_size();
+                        }
+                    }
 
                     match dom_message.message {
                         ClientMessage::Append(command_id, _) => {
