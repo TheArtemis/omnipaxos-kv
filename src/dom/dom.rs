@@ -46,6 +46,7 @@ impl Dom {
     }
 
     pub fn push_by_deadline(&mut self, message: DomMessage) {
+        // TODO: MODIFY THE if statement to check if the message is late or early
         let now = self.clock.get_time();
         if message.deadline <= now {
             self.push_to_early_buffer(message);
@@ -85,5 +86,12 @@ impl Dom {
         }
         due
     }
-        
+
+    // TODO: Server handles the late buffer:
+
+    // a) If I'm a leader I edit the deadline so that i can still do the fast path
+
+    // b) If I'm a follower I process it with the slow path???
+    // But since we are doing omnipaxos maybe we don't do that???
+
 }
