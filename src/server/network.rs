@@ -30,12 +30,12 @@ pub struct Network {
     max_client_id: Arc<Mutex<ClientId>>,
     batch_size: usize,
     client_message_sender: Sender<(ClientId, ClientMessage)>,
-    proxy_message_sender: Sender<DomMessage>,
+    proxy_message_sender: Sender<ProxyMessage>,
     cluster_message_sender: Sender<(NodeId, ClusterMessage)>,
     start_signal: Arc<Mutex<Option<Timestamp>>>,
     pub cluster_messages: Receiver<(NodeId, ClusterMessage)>,
     pub client_messages: Receiver<(ClientId, ClientMessage)>,
-    pub proxy_messages: Receiver<DomMessage>,
+    pub proxy_messages: Receiver<ProxyMessage>,
 }
 
 fn get_addrs(config: OmniPaxosKVConfig) -> (SocketAddr, Vec<SocketAddr>) {
@@ -173,7 +173,7 @@ impl Network {
     async fn handle_incoming_connection(
         connection: TcpStream,
         client_message_sender: Sender<(ClientId, ClientMessage)>,
-        proxy_message_sender: Sender<DomMessage>,
+        proxy_message_sender: Sender<ProxyMessage>,
         cluster_message_sender: Sender<(NodeId, ClusterMessage)>,
         connection_sender: Sender<NewConnection>,
         max_client_id_handle: Arc<Mutex<ClientId>>,
@@ -439,9 +439,9 @@ const PROXY_CLIENT_ID: ClientId = 0;
 
 type FromProxyConnection = Framed<
     FramedRead<tokio::net::tcp::OwnedReadHalf, LengthDelimitedCodec>,
-    DomMessage,
+    ProxyMessage,
     (),
-    Bincode<DomMessage, ()>,
+    Bincode<ProxyMessage, ()>,
 >;
 
 type ToProxyConnection = Framed<
@@ -472,7 +472,7 @@ impl ProxyConnection {
         proxy_id: ClientId,
         connection: TcpStream,
         batch_size: usize,
-        proxy_messages: Sender<DomMessage>,
+        proxy_messages: Sender<ProxyMessage>,
     ) -> Self {
         let (reader, mut writer) = frame_proxy_connection(connection);
         let reader_task = tokio::spawn(async move {
@@ -481,7 +481,7 @@ impl ProxyConnection {
                 for msg in messages {
                     match msg {
                         Ok(m) => {
-                            // Forward the DomMessage for dedicated proxy handling.
+                            // Forward the ProxyMessage for dedicated proxy handling.
                             let _ = proxy_id;
                             if let Err(_) = proxy_messages.send(m).await {
                                 break;

@@ -7,11 +7,12 @@ use omnipaxos::{
     OmniPaxos, OmniPaxosConfig,
 };
 use omnipaxos_kv::common::{kv::*, log_hash::LogHash, messages::*, utils::Timestamp};
-use omnipaxos_kv::dom::request::DomMessage;
 use omnipaxos_kv::dom::dom::Dom;
 use omnipaxos_kv::dom::config::DomConfig;
 use omnipaxos_storage::memory_storage::MemoryStorage;
 use std::{collections::HashSet, fs::File, io::Write, time::Duration};
+
+use crate::commit_queue::{CommitQueue, CommitState};
 
 type OmniPaxosInstance = OmniPaxos<Command, MemoryStorage<Command>>;
 const NETWORK_BATCH_SIZE: usize = 100;
@@ -28,7 +29,11 @@ pub struct OmniPaxosServer {
     omnipaxos_msg_buffer: Vec<Message<Command>>,
     config: OmniPaxosKVConfig,
     peers: Vec<NodeId>,
+
+    // Proxy fast path related
     proxy_command_ids: HashSet<(ClientId, CommandId)>,
+    commit_queue: CommitQueue,
+
     log_hash: LogHash,
 }
 
@@ -55,6 +60,7 @@ impl OmniPaxosServer {
             config,
             proxy_command_ids: HashSet::new(),
             log_hash: LogHash::new(),
+            commit_queue: CommitQueue::new(),
         }
     }
 
@@ -86,7 +92,7 @@ impl OmniPaxosServer {
                 },
                 _ = self.network.proxy_messages.recv_many(&mut proxy_msg_buf, NETWORK_BATCH_SIZE) => {
                     self.handle_proxy_messages(&mut proxy_msg_buf).await;
-                },
+                },                
                 _ = async {
                     match &mut deadline_sleep {
                         Some(s) => s.as_mut().await,
@@ -113,6 +119,9 @@ impl OmniPaxosServer {
                                     self.update_database_and_respond_fast(command);
                                 }
                                 else {
+                                    // If we are a follower we just respond with a fast reply
+                                    // We append the command to the command buffer to be committed later
+                                    // We need to ensure that we will add the commands in order
                                     self.respond_fast(command);
                                 }
 
@@ -122,6 +131,8 @@ impl OmniPaxosServer {
                     self.send_outgoing_msgs();
                 },
             }
+
+           self.flush_safe_to_commit_commands();
         }
     }
     
@@ -253,6 +264,39 @@ impl OmniPaxosServer {
         let msg = ServerMessage::FastReply(fast_reply);
         // Since we have not executed the command we still keep it in the proxy command ids
         self.network.send_to_proxy(msg);
+        self.commit_queue.push(command, CommitState::Pending);
+    }
+
+    fn update_database(&mut self, command: Command) {
+        if self.proxy_command_ids.remove(&(command.client_id, command.id)) {
+            self.database.handle_command(command.kv_cmd);
+        }
+    }
+
+    fn handle_commit_message(&mut self, commit_message: CommitMessage) {
+        let key = (commit_message.client_id, commit_message.command_id);
+        if self.proxy_command_ids.contains(&key) {
+            let command = self.commit_queue.get_command_by_key(commit_message.client_id, commit_message.command_id);
+
+            if command.is_some() {
+                self.commit_queue.set_safe_to_commit(command.unwrap());
+            }
+        }
+
+            // If server is leader he will just ignore this (his commit queue is empty)
+        }
+        
+
+    fn flush_safe_to_commit_commands(&mut self) {
+        let commands: Vec<Command> = self.commit_queue.drain_safe_to_commit_commands();
+
+        if commands.is_empty() {
+            return;
+        }
+
+        for command in commands {
+            self.update_database(command);
+        }
     }
 
 
@@ -277,24 +321,24 @@ impl OmniPaxosServer {
         self.send_outgoing_msgs();
     }
 
-    async fn handle_proxy_messages(&mut self, messages: &mut Vec<DomMessage>) {
-        for message in messages.drain(..) {
+    async fn handle_proxy_messages(&mut self, messages: &mut Vec<ProxyMessage>) {
+        for proxy_msg in messages.drain(..) {
+            match proxy_msg {
+                ProxyMessage::Append(dom_message) => {
+                    // Let the dom handle the message
+                    self.dom.push_by_deadline(dom_message.clone());
 
-            // Let the dom handle the message
-            self.dom.push_by_deadline(message.clone());
-
-            match message.message {
-                ClientMessage::Append(command_id, _) => {
-                    self.proxy_command_ids.insert((message.client_id, command_id));
+                    match dom_message.message {
+                        ClientMessage::Append(command_id, _) => {
+                            self.proxy_command_ids
+                                .insert((dom_message.client_id, command_id));
+                        }
+                    }
+                }
+                ProxyMessage::Commit(commit_message) => {
+                    self.handle_commit_message(commit_message);
                 }
             }
-            
-            /* match message.message {       
-            ClientMessage::Append(command_id, kv_command) => {
-                    self.proxy_command_ids.insert((message.client_id, command_id));
-                    self.append_to_log(message.client_id, command_id, kv_command)
-                }
-            } */
         }
         self.send_outgoing_msgs();
     }

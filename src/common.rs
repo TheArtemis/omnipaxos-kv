@@ -2,6 +2,8 @@ pub mod messages {
     use omnipaxos::{messages::Message as OmniPaxosMessage, util::NodeId};
     use serde::{Deserialize, Serialize};
 
+    use crate::dom::request::DomMessage;
+
     use super::{
         kv::{ClientId, Command, CommandId, KVCommand},
         utils::Timestamp,
@@ -82,6 +84,18 @@ pub mod messages {
     pub enum FastReplyResult {
        Write(CommandId),
        Read(CommandId, Option<String>),
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct CommitMessage {
+        pub client_id: ClientId,
+        pub command_id: CommandId,
+    }
+    
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub enum ProxyMessage {
+        Commit(CommitMessage),
+        Append(DomMessage),
     }
 }
 

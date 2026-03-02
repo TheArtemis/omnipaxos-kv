@@ -2,7 +2,9 @@ use log::{info, warn};
 
 use crate::clock::ClockSim;
 use crate::common::kv::{ClientId, NodeId};
-use crate::common::messages::{ClientMessage, FastReply, FastReplyResult, ServerMessage};
+use crate::common::messages::{
+    ClientMessage, CommitMessage, FastReply, FastReplyResult, ProxyMessage, ServerMessage,
+};
 use crate::dom::request::DomMessage;
 use crate::proxy::config::{ProxyConfig, Server};
 use crate::proxy::network::Network;
@@ -19,7 +21,6 @@ pub struct Proxy {
     reply_sets: HashMap<ClientRequestKey, ReplySetState>,
     clock: ClockSim,
     f: usize, // Amount of replicas that can fail
-    n_servers: usize,
 }
 
 impl Proxy {
@@ -38,9 +39,7 @@ impl Proxy {
         let clock_config = config.clock.clone();
         let network = Network::new(listen_address, servers, NETWORK_BATCH_SIZE).await;
         
-        // 
-        let n_servers = config.targets().len();
-        let n_replicas = n_servers - 1;
+        let n_replicas = config.targets().len() - 1;
         let f = (n_replicas - 1) / 2;
         Self {
             config,
@@ -52,8 +51,7 @@ impl Proxy {
                 clock_config.uncertainty_bound,
                 clock_config.sync_freq,
             ),
-            f: f,
-            n_servers: n_servers,
+            f,
         }
     }
 
@@ -99,11 +97,11 @@ impl Proxy {
             let deadline = self.get_deadline(send_time);
             let dom_message = DomMessage::new(client_id, message, deadline, send_time);
 
-            // Multicast to all servers
+            // Multicast to all servers as ProxyMessage::Append
             for server in self.config.targets() {
                 info!("Forward client {} -> server {}", client_id, server.id);
                 self.network
-                    .send_to_server(server.id, dom_message.clone())
+                    .send_to_server(server.id, ProxyMessage::Append(dom_message.clone()))
                     .await;
             }
         }
@@ -127,7 +125,7 @@ impl Proxy {
                     self.network.send_to_all_clients(message);
                 }
                 ServerMessage::FastReply(fast_reply) => {
-                    self.handle_fast_reply(fast_reply);
+                    self.handle_fast_reply(fast_reply).await;
                 }
                 other => {
                     warn!("Unexpected server message on proxy connection: {other:?}");
@@ -140,7 +138,7 @@ impl Proxy {
         send_time + 1000 // TODO change this!!!
     }
 
-    fn handle_fast_reply(&mut self, reply: FastReply) {
+    async fn handle_fast_reply(&mut self, reply: FastReply) {
         let key = ClientRequestKey::new(reply.client_id, reply.request_id);
         let state = self
             .reply_sets
@@ -168,10 +166,13 @@ impl Proxy {
 
         if let Some(leader_reply) = self.can_commit(key) {
             self.reply_to_client(leader_reply, key);
-
-            // TODO: The servers rn are are not committing the request.
-            // We need to add a commit message to the server to commit the request.
-            // Or do we make them commit directly before sending the reply to the proxy?
+            
+            // Will send the commit message to all servers
+            self.send_commit_message(CommitMessage {
+                client_id: reply.client_id,
+                command_id: reply.request_id,
+            })
+            .await;
         }
     }
     
@@ -218,5 +219,14 @@ impl Proxy {
         self.pending.remove(&key);
         self.reply_sets.remove(&key);
         self.network.send_to_client(client_id, msg);
+    }
+
+    async fn send_commit_message(&mut self, commit_message: CommitMessage) {
+        let targets = self.config.targets();
+        for server in targets {
+            self.network
+                .send_to_server(server.id, ProxyMessage::Commit(commit_message.clone()))
+                .await;
+        }
     }
 }

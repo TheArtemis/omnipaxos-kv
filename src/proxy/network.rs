@@ -12,7 +12,7 @@ use tokio_serde::{formats::Bincode, Framed};
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 
 use crate::common::kv::{ClientId, NodeId};
-use crate::common::messages::{ClientMessage, RegistrationMessage, ServerMessage};
+use crate::common::messages::{ClientMessage, ProxyMessage, RegistrationMessage, ServerMessage};
 use crate::common::utils::{frame_registration_connection, frame_servers_connection};
 use crate::dom::request::DomMessage;
 
@@ -26,8 +26,8 @@ type FromProxyServerConnection = Framed<
 type ToProxyServerConnection = Framed<
     FramedWrite<tokio::net::tcp::OwnedWriteHalf, LengthDelimitedCodec>,
     (),
-    DomMessage,
-    Bincode<(), DomMessage>,
+    ProxyMessage,
+    Bincode<(), ProxyMessage>,
 >;
 
 fn frame_proxy_server_connection(
@@ -215,7 +215,7 @@ impl Network {
         }
     }
 
-    pub async fn send_to_server(&mut self, to: NodeId, msg: DomMessage) {
+    pub async fn send_to_server(&mut self, to: NodeId, msg: ProxyMessage) {
         match self.server_connections.get_mut(to as usize) {
             Some(connection_slot) => match connection_slot {
                 Some(connection) => {
@@ -275,7 +275,7 @@ impl Network {
 struct ServerConnection {
     reader_task: JoinHandle<()>,
     writer_task: JoinHandle<()>,
-    outgoing_messages: Sender<DomMessage>,
+    outgoing_messages: Sender<ProxyMessage>,
 }
 
 impl ServerConnection {
@@ -329,8 +329,8 @@ impl ServerConnection {
 
     pub async fn send(
         &mut self,
-        msg: DomMessage,
-    ) -> Result<(), mpsc::error::SendError<DomMessage>> {
+        msg: ProxyMessage,
+    ) -> Result<(), mpsc::error::SendError<ProxyMessage>> {
         self.outgoing_messages.send(msg).await
     }
 
