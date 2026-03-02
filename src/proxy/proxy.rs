@@ -2,29 +2,22 @@ use log::{info, warn};
 
 use crate::clock::ClockSim;
 use crate::common::kv::{ClientId, CommandId, NodeId};
-use crate::common::messages::{
-    ClientMessage, FastReply, FastReplyResult, ServerMessage,
-};
+use crate::common::messages::{ClientMessage, FastReply, FastReplyResult, ServerMessage};
 use omnipaxos::ballot_leader_election::Ballot;
 use crate::dom::request::DomMessage;
 use crate::proxy::config::{ProxyConfig, Server};
 use crate::proxy::network::Network;
+use crate::proxy::types::{ClientRequestKey, ReplySetState};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
 const NETWORK_BATCH_SIZE: usize = 100;
 
-/// Reply set for one (client_id, request_id): current ballot and replies from replicas.
-struct ReplySetState {
-    current_ballot: Ballot,
-    replies: Vec<FastReply>,
-}
-
 pub struct Proxy {
     config: ProxyConfig,
     network: Network,
-    pending: HashMap<(ClientId, CommandId), ()>,
-    reply_sets: HashMap<(ClientId, CommandId), ReplySetState>,
+    pending: HashMap<ClientRequestKey, ()>,
+    reply_sets: HashMap<ClientRequestKey, ReplySetState>,
     clock: ClockSim,
 }
 
@@ -87,7 +80,8 @@ impl Proxy {
         for (client_id, message) in messages.drain(..) {
             match &message {
                 ClientMessage::Append(command_id, _) => {
-                    self.pending.insert((client_id, *command_id), ());
+                    self.pending
+                        .insert(ClientRequestKey::new(client_id, *command_id), ());
                 }
             }
             let send_time = self.clock.get_time();
@@ -109,7 +103,9 @@ impl Proxy {
             match message {
                 ServerMessage::ProxyResponse(client_id, inner) => match *inner {
                     inner @ (ServerMessage::Write(_) | ServerMessage::Read(_, _)) => {
-                        let _ = self.pending.remove(&(client_id, inner.command_id()));
+                        let _ = self
+                            .pending
+                            .remove(&ClientRequestKey::new(client_id, inner.command_id()));
                         self.network.send_to_client(client_id, inner);
                     }
                     other => {
@@ -137,7 +133,7 @@ impl Proxy {
     // Also, can we directly use the ballot number instead of the whole ballot object?
 
     fn handle_fast_reply(&mut self, reply: FastReply) {
-        let key = (reply.client_id, reply.request_id);
+        let key = ClientRequestKey::new(reply.client_id, reply.request_id);
         let n = self.config.targets().len();
         if n == 0 {
             return;
@@ -234,7 +230,7 @@ impl Proxy {
         None
     }
 
-    fn reply_to_client(&mut self, committed: FastReply, key: (ClientId, CommandId)) {
+    fn reply_to_client(&mut self, committed: FastReply, key: ClientRequestKey) {
         let client_id = committed.client_id;
         let msg = match committed.result {
             Some(FastReplyResult::Read(cmd_id, value)) => ServerMessage::Read(cmd_id, value),
