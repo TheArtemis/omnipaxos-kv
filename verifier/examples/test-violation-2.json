@@ -1,0 +1,54 @@
+[
+  {
+    "client_id": 1,
+    "input": {
+      "type": "Put",
+      "key": "y",
+      "value": "a"
+    },
+    "call": 1000,
+    "output": {
+      "status": "ok"
+    },
+    "return_time": 1100
+  },
+  {
+    "client_id": 2,
+    "input": {
+      "type": "Get",
+      "key": "y"
+    },
+    "call": 1050,
+    "output": {
+      "status": "ok",
+      "value": "b"
+    },
+    "return_time": 1150
+  },
+  {
+    "client_id": 3,
+    "input": {
+      "type": "Put",
+      "key": "y",
+      "value": "b"
+    },
+    "call": 1200,
+    "output": {
+      "status": "ok"
+    },
+    "return_time": 1300
+  },
+  {
+    "client_id": 2,
+    "input": {
+      "type": "Get",
+      "key": "y"
+    },
+    "call": 1250,
+    "output": {
+      "status": "ok",
+      "value": "a"
+    },
+    "return_time": 1350
+  }
+]

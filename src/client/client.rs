@@ -6,6 +6,9 @@ use rand::Rng;
 use std::time::Duration;
 use tokio::time::interval;
 
+#[cfg(feature = "correctness-check")]
+use omnipaxos_kv::correctness::operation_history::{Input, Output};
+
 const NETWORK_BATCH_SIZE: usize = 100;
 
 pub struct Client {
@@ -17,6 +20,8 @@ pub struct Client {
     active_server: NodeId,
     final_request_count: Option<usize>,
     next_request_id: usize,
+    #[cfg(feature = "correctness-check")]
+    operation_indices: std::collections::HashMap<CommandId, usize>, // Map command_id to operation_index
 }
 
 impl Client {
@@ -39,11 +44,16 @@ impl Client {
             id: config.server_id,
             server_network,
             proxy_network,
+            #[cfg(feature = "correctness-check")]
+            client_data: ClientData::new_with_correctness(config.server_id),
+            #[cfg(not(feature = "correctness-check"))]
             client_data: ClientData::new(),
             active_server: config.server_id,
             config,
             final_request_count: None,
             next_request_id: 0,
+            #[cfg(feature = "correctness-check")]
+            operation_indices: std::collections::HashMap::new(),
         }
     }
 
@@ -66,6 +76,12 @@ impl Client {
         match start_time {
             Some(ServerMessage::StartSignal(start_time)) => {
                 Self::wait_until_sync_time(&mut self.config, start_time).await;
+                #[cfg(feature = "correctness-check")]
+                {
+                    // Set sync time for correctness tracking after waiting
+                    // This ensures all clients use the same reference point (the actual scheduled start instant)
+                    self.client_data.set_sync_time(start_time);
+                }
             }
             _ => panic!("Error waiting for start signal"),
         }
@@ -176,6 +192,35 @@ impl Client {
             server_response => {
                 let cmd_id = server_response.command_id();
                 self.client_data.new_response(cmd_id);
+                
+                #[cfg(feature = "correctness-check")]
+                {
+                    if let Some(&op_index) = self.operation_indices.get(&cmd_id) {
+                        match &server_response {
+                            ServerMessage::Read(_, value) => {
+                                let output = Output {
+                                    status: "ok".to_string(),
+                                    value: value.clone(),
+                                };
+                                self.client_data.complete_operation(op_index, output);
+                                self.operation_indices.remove(&cmd_id);
+                            }
+                            ServerMessage::Write(_) => {
+                                let output = Output {
+                                    status: "ok".to_string(),
+                                    value: None,
+                                };
+                                self.client_data.complete_operation(op_index, output);
+                                self.operation_indices.remove(&cmd_id);
+                            }
+                            ServerMessage::StartSignal(_) => unreachable!(),
+                            // Other server responses (e.g., ProxyResponse, FastReply)
+                            // are ignored for correctness-check purposes.
+                            ServerMessage::ProxyResponse(_, _)
+                            | ServerMessage::FastReply(_) => {}
+                        }
+                    }
+                }
             }
         }
     }
@@ -183,9 +228,15 @@ impl Client {
     async fn send_request(&mut self, is_write: bool) {
         let key = self.next_request_id.to_string();
         let cmd = match is_write {
-            true => KVCommand::Put(key.clone(), key),
-            false => KVCommand::Get(key),
+            true => KVCommand::Put(key.clone(), key.clone()),
+            false => KVCommand::Get(key.clone()),
         };
+        
+        #[cfg(feature = "correctness-check")]
+        {
+            self.record_operation_for_cmd(&cmd);
+        }
+        
         let request = ClientMessage::Append(self.next_request_id, cmd);
         debug!("Sending {request:?}");
 
@@ -203,6 +254,25 @@ impl Client {
         // Update client data
         self.client_data.new_request(is_write);
         self.next_request_id += 1
+    }
+
+    #[cfg(feature = "correctness-check")]
+    fn record_operation_for_cmd(&mut self, cmd: &KVCommand) {
+        let input = match cmd {
+            KVCommand::Put(k, v) => Input::Put {
+                key: k.clone(),
+                value: v.clone(),
+            },
+            KVCommand::Get(k) => Input::Get {
+                key: k.clone(),
+            },
+            KVCommand::Delete(k) => Input::Delete {
+                key: k.clone(),
+            },
+        };
+        if let Some(op_index) = self.client_data.record_operation(input) {
+            self.operation_indices.insert(self.next_request_id, op_index);
+        }
     }
 
     fn run_finished(&self) -> bool {
@@ -234,6 +304,28 @@ impl Client {
         self.client_data.save_summary(self.config.clone())?;
         self.client_data
             .to_csv(self.config.output_filepath.clone())?;
+        
+        #[cfg(feature = "correctness-check")]
+        {
+            self.export_history_json();
+        }
+        
         Ok(())
+    }
+
+    #[cfg(feature = "correctness-check")]
+    fn export_history_json(&self) {
+        let history_path = if let Some(ref path) = self.config.history_output_path {
+            path.clone()
+        } else {
+            // Default to logs directory with client ID
+            // Since logs/ is mounted, write directly there
+            format!("/app/logs/history-{}.json", self.id)
+        };
+        if let Err(e) = self.client_data.export_history_json(&history_path) {
+            warn!("Failed to export history JSON: {}", e);
+        } else {
+            info!("Exported operation history to {}", history_path);
+        }
     }
 }
