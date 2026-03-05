@@ -214,10 +214,7 @@ impl Client {
                                 self.operation_indices.remove(&cmd_id);
                             }
                             ServerMessage::StartSignal(_) => unreachable!(),
-                            // Other server responses (e.g., ProxyResponse, FastReply)
-                            // are ignored for correctness-check purposes.
-                            ServerMessage::ProxyResponse(_, _)
-                            | ServerMessage::FastReply(_) => {}
+                            ServerMessage::FastReply(_) | ServerMessage::SlowPathReply(_) => {}
                         }
                     }
                 }
