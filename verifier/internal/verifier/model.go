@@ -40,14 +40,23 @@ func createKVModel() porcupine.Model {
 	}
 }
 
+func copyState(st map[string]string) map[string]string {
+	newSt := make(map[string]string, len(st)+1)
+	for k, v := range st {
+		newSt[k] = v
+	}
+	return newSt
+}
+
 func handlePut(st map[string]string, in map[string]interface{}) (bool, map[string]string) {
 	key, ok1 := in["key"].(string)
 	value, ok2 := in["value"].(string)
 	if !ok1 || !ok2 {
 		return false, st
 	}
-	st[key] = value
-	return true, st
+	newSt := copyState(st)
+	newSt[key] = value
+	return true, newSt
 }
 
 func handleGet(st map[string]string, in map[string]interface{}, out map[string]interface{}) (bool, map[string]string) {
@@ -78,8 +87,9 @@ func handleDelete(st map[string]string, in map[string]interface{}) (bool, map[st
 	if !ok1 {
 		return false, st
 	}
-	delete(st, key)
-	return true, st
+	newSt := copyState(st)
+	delete(newSt, key)
+	return true, newSt
 }
 
 func describeOperation(input, output interface{}) string {
