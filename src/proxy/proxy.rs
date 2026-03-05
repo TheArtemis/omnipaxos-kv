@@ -172,9 +172,9 @@ impl Proxy {
         }
     }
 
-    fn get_deadline(&self, send_time: u64) -> u64 {
-        // let epsilon = self.clock.get_uncertainty() as u64;
-        send_time + 500
+    fn get_deadline(&mut self, send_time: u64) -> u64 {
+        let epsilon = self.clock.get_uncertainty() as u64;
+        send_time + 2 * epsilon
     }
 
     async fn handle_fast_reply(&mut self, reply: FastReply) {

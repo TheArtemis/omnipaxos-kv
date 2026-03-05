@@ -20,6 +20,7 @@ const NETWORK_BATCH_SIZE: usize = 100;
 const LEADER_WAIT: Duration = Duration::from_secs(1);
 const ELECTION_TIMEOUT: Duration = Duration::from_secs(1);
 const STATS_FLUSH_INTERVAL: Duration = Duration::from_secs(5);
+const LATE_BUFFER_DRAIN_INTERVAL: Duration = Duration::from_millis(10);
 
 #[derive(Debug, Serialize)]
 struct ServerStats<'a> {
@@ -90,6 +91,8 @@ impl OmniPaxosServer {
         let stats_start = tokio::time::Instant::now() + STATS_FLUSH_INTERVAL;
         let mut stats_interval = tokio::time::interval_at(stats_start, STATS_FLUSH_INTERVAL);
         stats_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut late_drain_interval = tokio::time::interval(LATE_BUFFER_DRAIN_INTERVAL);
+        late_drain_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             // Compute when the next deadline is
             let duration = self.dom.duration_until_next_deadline();
@@ -97,6 +100,10 @@ impl OmniPaxosServer {
             tokio::select! {
                 _ = election_interval.tick() => {
                     self.omnipaxos.tick();
+                    self.send_outgoing_msgs();
+                },
+                _ = late_drain_interval.tick() => {
+                    self.drain_late_buffer();
                     self.send_outgoing_msgs();
                 },
                 _ = stats_interval.tick() => {
@@ -349,7 +356,6 @@ impl OmniPaxosServer {
         self.send_outgoing_msgs();
     }
 
-    // TODO: test this, still not sure if it goes through all of omnipaxos
     async fn handle_proxy_messages(&mut self, messages: &mut Vec<ProxyMessage>) {
         for proxy_msg in messages.drain(..) {
             match proxy_msg {
@@ -362,38 +368,29 @@ impl OmniPaxosServer {
                             }
                         }
                     }
-
-                    // Let the dom handle the message
-                    self.dom.push_by_deadline(dom_message.clone());
-
-                    if let Some((leader_id, _)) = self.omnipaxos.get_current_leader() {
-                        if self.id == leader_id && self.dom.get_late_buffer_size() > 0 {
-                            // Extract one element from the Dom late buffer of the leader and start omnipaxos
-                            if let Some(dom_message) = self.dom.pop_from_late_buffer() {
-                                match dom_message.message {
-                                    ClientMessage::Append(command_id, kv_cmd) => {
-                                        // start omnipaxos and exit this function
-                                        self.append_to_log(dom_message.client_id, command_id, kv_cmd);
-                                        self.send_outgoing_msgs();
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    else {
-                        // remove elements from the late buffer of the followers
-                        if self.dom.get_late_buffer_size() > 0{
-                            let bin = self.dom.get_late_buffer_size();
-                        }
-                    }
+                    self.dom.push_by_deadline(dom_message);
                 }
                 ProxyMessage::Commit(commit_message) => {
                     self.handle_commit_message(commit_message);
                 }
             }
         }
+        self.drain_late_buffer();
         self.send_outgoing_msgs();
+    }
+
+    fn drain_late_buffer(&mut self) {
+        if let Some((leader_id, _)) = self.omnipaxos.get_current_leader() {
+            if self.id == leader_id {
+                while let Some(dom_message) = self.dom.pop_from_late_buffer() {
+                    match dom_message.message {
+                        ClientMessage::Append(command_id, kv_cmd) => {
+                            self.append_to_log(dom_message.client_id, command_id, kv_cmd);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     async fn handle_cluster_messages(
