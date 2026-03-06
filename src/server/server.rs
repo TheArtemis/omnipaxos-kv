@@ -135,21 +135,15 @@ impl OmniPaxosServer {
                                     kv_cmd: kv_command,
                                 };
 
-                                // Update the log hash with the command
-                                self.log_hash.add_entry(&command);
-
-
                                 // If we are the leader, update the database and respond with a fast reply
                                 if self.id == self.omnipaxos.get_current_leader().unwrap().0 {
                                     self.update_database_and_respond_fast(command);
-                                }
-                                else {
+                                } else {
                                     // If we are a follower we just respond with a fast reply
                                     // We append the command to the command buffer to be committed later
                                     // We need to ensure that we will add the commands in order
                                     self.respond_fast(command);
                                 }
-
                             }
                         }
                     }

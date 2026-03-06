@@ -1,8 +1,9 @@
-use log::{info, warn};
+use log::{debug, info, warn};
 
 use crate::clock::ClockSim;
 use crate::common::kv::{ClientId, NodeId};
 use crate::telemetry::TelemetryWriter;
+use crate::common::log_hash::LogHash;
 use crate::common::messages::{
     ClientMessage, CommitMessage, FastReply, FastReplyResult, ProxyMessage, ServerMessage, SlowPathReply,
 };
@@ -265,6 +266,19 @@ impl Proxy {
         replies_len >= self.get_super_quorum_size()
     }
 
+    /// True iff all replies in the set for this key have the same log hash (replicas have consistent logs).
+    fn logs_consistent(&self, key: ClientRequestKey) -> bool {
+        let replies = match self.reply_sets.get(&key) {
+            Some(state) => &state.replies,
+            None => return false,
+        };
+        let first_hash: &LogHash = match replies.first().map(|r| &r.hash) {
+            Some(h) => h,
+            None => return false,
+        };
+        replies.iter().all(|r| r.hash == *first_hash)
+    }
+
     fn get_leader_reply(&self, key: ClientRequestKey) -> Option<FastReply> {
         // Leader reply is the one with the result that is not None
         let replies = self.reply_sets.get(&key).unwrap().replies.clone();
@@ -278,7 +292,22 @@ impl Proxy {
     )-> Option<FastReply> {
 
         if self.is_super_quorum(key) {
-            return self.get_leader_reply(key);
+            if !self.logs_consistent(key) {
+                warn!(
+                    "Fast path: super quorum for {:?} but replicas have inconsistent log hashes, not committing",
+                    key
+                );
+                return None;
+            }
+            // Only log "committing" when we actually have a leader reply to commit (avoids
+            // logging "committing" when we have e.g. two follower replies with same hash
+            // and the leader reply arrives later with a different hash).
+            if let Some(leader) = self.get_leader_reply(key) {
+                info!("Super quorum for {:?}, committing", key);
+                // Log the log
+                // debug!("Log for {:?}: {:?}", key, self.reply_sets.get(&key).unwrap().replies);
+                return Some(leader);
+            }
         }
         None
     }   
