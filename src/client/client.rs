@@ -41,7 +41,7 @@ impl Client {
             proxy_network,
             active_server: config.server_id,
             config,
-            client_data: ClientData::new(), // Initialize with new()
+            client_data: ClientData::new(),
             final_request_count: None,
             next_request_id: 0,
         }
