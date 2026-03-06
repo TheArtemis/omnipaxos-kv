@@ -2,15 +2,17 @@ use log::{info, warn};
 
 use crate::clock::ClockSim;
 use crate::common::kv::{ClientId, NodeId};
+use crate::telemetry::TelemetryWriter;
 use crate::common::messages::{
-    ClientMessage, CommitMessage, FastReply, FastReplyResult, ProxyMessage, ServerMessage,
+    ClientMessage, CommitMessage, FastReply, FastReplyResult, ProxyMessage, ServerMessage, SlowPathReply,
 };
 use crate::dom::request::DomMessage;
 use crate::proxy::config::{ProxyConfig, Server};
 use crate::proxy::network::Network;
-use crate::proxy::types::{ClientRequestKey, ReplySetState};
+use crate::proxy::types::{ClientRequestKey, ReplySetState, SlowReplySetState};
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::time::Instant;
 
 const NETWORK_BATCH_SIZE: usize = 100;
 
@@ -18,9 +20,13 @@ pub struct Proxy {
     config: ProxyConfig,
     network: Network,
     pending: HashMap<ClientRequestKey, ()>,
+    pending_timestamps: HashMap<ClientRequestKey, Instant>,
     reply_sets: HashMap<ClientRequestKey, ReplySetState>,
+    slow_reply_sets: HashMap<ClientRequestKey, SlowReplySetState>,
     clock: ClockSim,
     f: usize, // Amount of replicas that can fail
+    n_servers: usize,
+    telemetry: TelemetryWriter,
 }
 
 impl Proxy {
@@ -41,17 +47,23 @@ impl Proxy {
         
         let n_replicas = config.targets().len() - 1;
         let f = (n_replicas - 1) / 2;
+        let n_servers = config.targets().len();
+        let metrics_filepath = config.metrics_filepath.clone();
         Self {
             config,
             network,
             pending: HashMap::new(),
+            pending_timestamps: HashMap::new(),
             reply_sets: HashMap::new(),
+            slow_reply_sets: HashMap::new(),
             clock: ClockSim::new(
                 clock_config.drift_rate,
                 clock_config.uncertainty_bound,
                 clock_config.sync_freq,
             ),
             f,
+            n_servers,
+            telemetry: TelemetryWriter::new(metrics_filepath),
         }
     }
 
@@ -73,6 +85,9 @@ impl Proxy {
     pub async fn run(&mut self) {
         let mut client_msg_buf = Vec::with_capacity(NETWORK_BATCH_SIZE);
         let mut server_msg_buf = Vec::with_capacity(NETWORK_BATCH_SIZE);
+        let start = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+        let mut metrics_flush_interval = tokio::time::interval_at(start, std::time::Duration::from_secs(1));
+        metrics_flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 _ = self.network.client_messages.recv_many(&mut client_msg_buf, NETWORK_BATCH_SIZE) => {
@@ -81,16 +96,30 @@ impl Proxy {
                 _ = self.network.server_messages.recv_many(&mut server_msg_buf, NETWORK_BATCH_SIZE) => {
                     self.handle_server_messages(&mut server_msg_buf).await;
                 },
+                _ = metrics_flush_interval.tick() => {
+                    self.flush_metrics();
+                },
+                _ = tokio::signal::ctrl_c() => {
+                    self.flush_metrics();
+                    return;
+                },
             }
         }
+    }
+
+    fn flush_metrics(&mut self) {
+        self.telemetry.flush();
     }
 
     async fn handle_client_messages(&mut self, messages: &mut Vec<(ClientId, ClientMessage)>) {
         for (client_id, message) in messages.drain(..) {
             match &message {
                 ClientMessage::Append(command_id, _) => {
-                    self.pending
-                        .insert(ClientRequestKey::new(client_id, *command_id), ());
+                    let key = ClientRequestKey::new(client_id, *command_id);
+                    self.pending.insert(key, ());
+                    self.pending_timestamps.insert(key, Instant::now());
+                    self.telemetry.metrics.total_sent += 1;
+                    self.telemetry.metrics.recompute_ratios();
                 }
             }
             let send_time = self.clock.get_time();
@@ -110,17 +139,9 @@ impl Proxy {
     async fn handle_server_messages(&mut self, messages: &mut Vec<ServerMessage>) {
         for message in messages.drain(..) {            
             match message {
-                ServerMessage::ProxyResponse(client_id, inner) => match *inner {
-                    inner @ (ServerMessage::Write(_) | ServerMessage::Read(_, _)) => {
-                        let _ = self
-                            .pending
-                            .remove(&ClientRequestKey::new(client_id, inner.command_id()));
-                        self.network.send_to_client(client_id, inner);
-                    }
-                    other => {
-                        warn!("Unexpected proxy inner message: {other:?}");
-                    }
-                },
+                ServerMessage::SlowPathReply(sr) => {
+                    self.handle_slow_path_reply(sr);
+                }
                 ServerMessage::StartSignal(_) => {
                     self.network.send_to_all_clients(message);
                 }
@@ -134,8 +155,9 @@ impl Proxy {
         }
     }
 
-    fn get_deadline(&self, send_time: u64) -> u64 {
-        send_time + 1000 // TODO change this!!!
+    fn get_deadline(&mut self, send_time: u64) -> u64 {
+        let epsilon = self.clock.get_uncertainty() as u64;
+        send_time + 2 * epsilon
     }
 
     async fn handle_fast_reply(&mut self, reply: FastReply) {
@@ -162,11 +184,23 @@ impl Proxy {
             state.replies.clear();
         }
         // 3. Same ballot: insert
-        state.replies.push(reply.clone());        
+        state.replies.push(reply.clone());
+
+        if let Some(ts) = self.pending_timestamps.get(&key) {
+            let latency_us = ts.elapsed().as_micros();
+            let entry = self.telemetry.metrics.nodes.entry(reply.replica_id).or_default();
+            entry.fast_path_count += 1;
+            entry.push_fast_path_latency(latency_us);
+        }
 
         if let Some(leader_reply) = self.can_commit(key) {
+            if let Some(ts) = self.pending_timestamps.remove(&key) {
+                let _ = ts; // already recorded per-node above; latency used at slow-path only
+            }
+            self.telemetry.metrics.fast_path_committed += 1;
+            self.telemetry.metrics.recompute_ratios();
+            self.telemetry.throughput_window_count += 1;
             self.reply_to_client(leader_reply, key);
-            
             // Will send the commit message to all servers
             self.send_commit_message(CommitMessage {
                 client_id: reply.client_id,
@@ -176,9 +210,49 @@ impl Proxy {
         }
     }
     
+    fn handle_slow_path_reply(&mut self, sr: SlowPathReply) {
+        let key = ClientRequestKey::new(sr.client_id, sr.request_id);
+        let state = self
+            .slow_reply_sets
+            .entry(key)
+            .or_insert_with(|| SlowReplySetState {
+                replies: Vec::new(),
+                result: None,
+            });
+
+        if state.replies.contains(&sr.replica_id) {
+            return;
+        }
+        state.replies.push(sr.replica_id);
+        if let Some(res) = sr.result {
+            state.result = Some(res);
+        }
+
+        let majority = self.n_servers / 2 + 1;
+        if state.replies.len() >= majority {
+            if let Some(result) = state.result.take() {
+                if let Some(ts) = self.pending_timestamps.remove(&key) {
+                    let latency_us = ts.elapsed().as_micros();
+                    self.telemetry.metrics.push_slow_path_latency(latency_us);
+                    self.telemetry.metrics.slow_path_committed += 1;
+                    self.telemetry.metrics.recompute_ratios();
+                    self.telemetry.throughput_window_count += 1;
+                }
+                self.reply_sets.remove(&key);
+                self.slow_reply_sets.remove(&key);
+                let _ = self.pending.remove(&key);
+                let response = match result {
+                    FastReplyResult::Write(id) => ServerMessage::Write(id),
+                    FastReplyResult::Read(id, val) => ServerMessage::Read(id, val),
+                };
+                self.network.send_to_client(sr.client_id, response);
+            }
+        }
+    }
+
     #[inline]
     fn get_super_quorum_size(&self) -> usize {
-        1 + self.f + (self.f + 1) / 2// 1 + f + ceil(f/2)
+        1 + self.f + (self.f + 1) / 2 // 1 + f + ceil(f/2)
     }
 
     fn is_super_quorum(&self, key: ClientRequestKey) -> bool {

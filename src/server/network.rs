@@ -5,7 +5,6 @@ use omnipaxos_kv::common::{
     messages::*,
     utils::*,
 };
-use omnipaxos_kv::dom::request::DomMessage;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

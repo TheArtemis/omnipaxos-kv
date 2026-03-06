@@ -1,4 +1,4 @@
-use crate::clock::{self, ClockSim};
+use crate::clock::ClockSim;
 use crate::common::kv::{ClientId, CommandId};
 use crate::dom::config::DomConfig;
 use crate::dom::request::DomMessage;
@@ -7,8 +7,6 @@ use std::collections::{BinaryHeap, HashMap};
 use std::time::Duration;
 
 pub struct Dom {
-    config: DomConfig,
-
     // Early buffer: min-heap by DomMessage::deadline
     early_buffer: BinaryHeap<Reverse<DomMessage>>,
     
@@ -20,13 +18,9 @@ pub struct Dom {
     // moment in time where the last message from the early buffer has been released
     last_released_command: u64, 
 
-    // Release messages job
-
-    // Slow path if late
-
-    // Ack Proxy on log append 
-    
-
+    // Used by the server to compute fast-path / slow-path invocation rates.
+    pub early_insertions: usize,
+    pub late_insertions: usize,
 }
 
 impl Dom {
@@ -37,11 +31,12 @@ impl Dom {
             config.clock.sync_freq,
         );
         Self {
-            config,
             early_buffer: BinaryHeap::new(),
             late_buffer: HashMap::new(),
             clock,
             last_released_command: 0,
+            early_insertions: 0,
+            late_insertions: 0,
         }
     }
 
@@ -73,8 +68,9 @@ impl Dom {
     }
 
     pub fn push_by_deadline(&mut self, message: DomMessage) {
-        // TODO: MODIFY THE if statement to check if the message is late or early
-        if message.deadline > self.last_released_command {
+        let now = self.clock.get_time();
+        let uncertainty = self.clock.get_uncertainty() as u64;
+        if message.deadline > now + uncertainty {
             self.push_to_early_buffer(message);
         } else {
             self.push_to_late_buffer(message);
@@ -84,10 +80,19 @@ impl Dom {
     pub fn push_to_late_buffer(&mut self, message: DomMessage) {
         let key = (message.client_id, message.message.command_id());
         self.late_buffer.insert(key, message);
+        self.late_insertions += 1;
     }
 
     pub fn push_to_early_buffer(&mut self, message: DomMessage) {
         self.early_buffer.push(Reverse(message));
+        self.early_insertions += 1;
+    }
+
+    pub fn take_buffer_counts(&mut self) -> (usize, usize) {
+        let counts = (self.early_insertions, self.late_insertions);
+        self.early_insertions = 0;
+        self.late_insertions = 0;
+        counts
     }
 
 
@@ -109,8 +114,8 @@ impl Dom {
             if msg.deadline > now {
                 break;
             }
+            self.last_released_command = msg.deadline;
             due.push(self.early_buffer.pop().unwrap().0);
-            self.last_released_command = self.clock.get_time();
         }
         due
     }
