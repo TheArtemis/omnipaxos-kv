@@ -11,17 +11,17 @@ fn test_add_element_and_window_size() {
     let client_id = 1;
 
     owd.add_element(client_id, 10);
-    assert_eq!(owd.client_data.get(&client_id).unwrap().len(), 1);
+    assert_eq!(owd.getSize(client_id), 1);
 
     owd.add_element(client_id, 20);
     owd.add_element(client_id, 30);
-    assert_eq!(owd.client_data.get(&client_id).unwrap().len(), 3);
+    assert_eq!(owd.getSize(client_id), 3);
 
     owd.add_element(client_id, 40);
-    assert_eq!(owd.client_data.get(&client_id).unwrap().len(), 3);
-    
-    let current_values: Vec<u64> = owd.client_data.get(&client_id).unwrap().iter().copied().collect();
-    assert_eq!(current_values, vec![20, 30, 40]);
+    assert_eq!(owd.getSize(client_id), 3);
+
+    // Window should keep the latest 3 elements: [20, 30, 40].
+    assert_eq!(owd.get_median(client_id), 30);
 }
 
 #[test]

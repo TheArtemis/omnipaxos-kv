@@ -64,9 +64,15 @@ impl Dom {
     pub fn get_time(&mut self) -> u64{
         self.clock.get_time()
     }
+
     // request deadline to owd
     pub fn request_deadline_from_owd(&mut self, client_id: ClientId) -> u64{
         self.owd.get_adaptive_deadline(client_id)
+    }
+
+    // return size of element inside owd for client_id
+    pub fn get_size(&mut self, client_id: ClientId) -> u64{
+        return self.owd.getSize(client_id)
     }
 
     // Implemented for testing

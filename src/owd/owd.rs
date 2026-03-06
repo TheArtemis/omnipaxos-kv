@@ -1,6 +1,8 @@
 use std::collections::{HashMap, VecDeque};
 use std::collections::hash_map::Entry;
 
+use crate::common::kv::ClientId;
+
 pub struct Owd {
     // HashMap one for each client sending messages
     client_data: HashMap<u64, VecDeque<u64>>,
@@ -38,6 +40,14 @@ impl Owd {
             _ => 0,
         }
     }
+
+    pub fn getSize(&mut self, client_id: ClientId)-> u64{
+        match self.client_data.get(&client_id) {
+            Some(deque) => deque.len() as u64,
+            None => 0,
+        }
+    }
+
 
     pub fn add_element(&mut self, key: u64, new_elem: u64) {
 

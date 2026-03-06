@@ -329,6 +329,7 @@ impl OmniPaxosServer {
                     // Let the dom handle the message
                     let message_passing_delay = self.dom.get_time() - dom_message.send_time;
                     self.dom.add_element_to_owd(dom_message.client_id, message_passing_delay);
+                    // debug!("Elements inside owd data structure for client_id {} = {}", dom_message.client_id, self.dom.get_size(dom_message.client_id));
                     self.dom.push_by_deadline(dom_message.clone());
 
                     if let Some((leader_id, _)) = self.omnipaxos.get_current_leader() {
