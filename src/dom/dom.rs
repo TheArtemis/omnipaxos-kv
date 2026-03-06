@@ -118,13 +118,6 @@ impl Dom {
             due.push(self.early_buffer.pop().unwrap().0);
         }
         due
-    }
-
-    // TODO: Server handles the late buffer:
-
-    // a) If I'm a leader I edit the deadline so that i can still do the fast path
-
-    // b) If I'm a follower I process it with the slow path???
-    // But since we are doing omnipaxos maybe we don't do that???
+    }    
 
 }
