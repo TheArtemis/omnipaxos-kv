@@ -2,15 +2,22 @@ pub mod messages {
     use omnipaxos::{messages::Message as OmniPaxosMessage, util::NodeId};
     use serde::{Deserialize, Serialize};
 
+    use crate::dom::request::DomMessage;
+
     use super::{
-        kv::{Command, CommandId, KVCommand},
+        kv::{ClientId, Command, CommandId, KVCommand},
         utils::Timestamp,
     };
+
+    /// Re-exported for proxy reply-set state and ballot comparison.
+    pub use omnipaxos::ballot_leader_election::Ballot;
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
     pub enum RegistrationMessage {
         NodeRegister(NodeId),
         ClientRegister,
+        // Used by the proxy to distinguish its connection type on the server.
+        ProxyRegister,
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -24,11 +31,21 @@ pub mod messages {
         Append(CommandId, KVCommand),
     }
 
+    impl ClientMessage {
+        pub fn command_id(&self) -> CommandId {
+            match self {
+                ClientMessage::Append(id, _) => *id,
+            }
+        }
+    }
+
     #[derive(Clone, Debug, Serialize, Deserialize)]
     pub enum ServerMessage {
         Write(CommandId),
         Read(CommandId, Option<String>),
         StartSignal(Timestamp),
+        FastReply(FastReply),
+        SlowPathReply(SlowPathReply),
     }
 
     impl ServerMessage {
@@ -37,7 +54,111 @@ pub mod messages {
                 ServerMessage::Write(id) => *id,
                 ServerMessage::Read(id, _) => *id,
                 ServerMessage::StartSignal(_) => unimplemented!(),
+                ServerMessage::FastReply(fr) => fr.request_id,
+                ServerMessage::SlowPathReply(sr) => sr.request_id,
             }
+        }
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct FastReply {
+        pub ballot: Ballot,
+        pub replica_id: NodeId,
+        pub client_id: ClientId,
+        pub request_id: CommandId,
+        pub result: Option<ServerResult>, // None for the followers
+        pub hash: super::log_hash::LogHash,
+    }
+
+    impl FastReply {
+        pub fn is_replica_reply(&self) -> bool {
+            self.result.is_none()
+        }
+
+        pub fn is_leader_reply(&self) -> bool {
+            self.result.is_some()
+        }
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub enum ServerResult {
+       Write(CommandId),
+       Read(CommandId, Option<String>),
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct SlowPathReply {
+        pub replica_id: NodeId,
+        pub client_id: ClientId,
+        pub request_id: CommandId,
+        pub result: Option<ServerResult>,
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct CommitMessage {
+        pub client_id: ClientId,
+        pub command_id: CommandId,
+    }
+    
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub enum ProxyMessage {
+        Commit(CommitMessage),
+        Append(DomMessage),
+    }
+}
+
+/// Running set-hash over log entries: SHA-1 per entry, XOR'd into a single value.
+/// Equality of set hashes across replicas implies identical log contents (order fixed by deadlines).
+pub mod log_hash {
+    use serde::{Deserialize, Serialize};
+
+    use super::kv::Command;
+
+    const SHA1_LEN: usize = 20;
+
+    #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct LogHash(pub [u8; SHA1_LEN]);
+
+    impl LogHash {
+        /// Empty log hash
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        /// Hash a single log entry with SHA-1 (deterministic bincode serialization).
+        fn hash_entry(command: &Command) -> [u8; SHA1_LEN] {
+            use sha1::{Digest, Sha1};
+            let bytes = bincode::serialize(command).expect("Command serialization is infallible");
+            let digest = Sha1::new().chain_update(bytes).finalize();
+            digest.as_slice().try_into().expect("SHA-1 output is 20 bytes")
+        }
+
+        #[inline]
+        fn xor_into(running: &mut [u8; SHA1_LEN], entry_hash: &[u8; SHA1_LEN]) {
+            for i in 0..SHA1_LEN {
+                running[i] ^= entry_hash[i];
+            }
+        }
+
+        pub fn add_entry(&mut self, command: &Command) {
+            let h = Self::hash_entry(command);
+            Self::xor_into(&mut self.0, &h);
+        }
+
+        pub fn remove_entry(&mut self, command: &Command) {
+            let h = Self::hash_entry(command);
+            Self::xor_into(&mut self.0, &h);
+        }
+
+        pub fn replace_entry(&mut self, old_command: &Command, new_command: &Command) {
+            self.remove_entry(old_command);
+            self.add_entry(new_command);
+        }
+    }
+
+    impl AsRef<[u8; SHA1_LEN]> for LogHash {
+        fn as_ref(&self) -> &[u8; SHA1_LEN] {
+            &self.0
         }
     }
 }
@@ -46,6 +167,11 @@ pub mod kv {
     use omnipaxos::{macros::Entry, storage::Snapshot};
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
+
+    // Re-export telemetry types so existing `common::kv::*` imports keep working.
+    pub use crate::telemetry::{MAX_LATENCY_SAMPLES, NodeMetrics, SystemMetrics};
+    /// Backward-compatible alias for [`NodeMetrics`].
+    pub type Metrics = NodeMetrics;
 
     pub type CommandId = usize;
     pub type ClientId = u64;

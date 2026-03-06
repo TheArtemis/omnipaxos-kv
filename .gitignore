@@ -62,3 +62,7 @@ Temporary Items
 # End of https://www.toptal.com/developers/gitignore/api/macos
 
 .vscode/
+
+# Verifier
+*/examples/*.html
+*/examples/merged-history.json
