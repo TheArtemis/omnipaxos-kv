@@ -5,6 +5,7 @@ use omnipaxos_kv::common::{
     messages::*,
     utils::*,
 };
+use omnipaxos_kv::dom::request::DomMessage;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -15,6 +16,8 @@ use tokio::{
     sync::mpsc::Receiver,
 };
 use tokio::{sync::mpsc, task::JoinHandle};
+use tokio_serde::{formats::Bincode, Framed};
+use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 
 use crate::configs::OmniPaxosKVConfig;
 
@@ -22,12 +25,17 @@ pub struct Network {
     peers: Vec<NodeId>,
     peer_connections: Vec<Option<PeerConnection>>,
     client_connections: HashMap<ClientId, ClientConnection>,
+    // Single proxy connection (if present).
+    proxy_connection: Arc<Mutex<Option<ProxyConnection>>>,
     max_client_id: Arc<Mutex<ClientId>>,
     batch_size: usize,
     client_message_sender: Sender<(ClientId, ClientMessage)>,
+    proxy_message_sender: Sender<ProxyMessage>,
     cluster_message_sender: Sender<(NodeId, ClusterMessage)>,
+    start_signal: Arc<Mutex<Option<Timestamp>>>,
     pub cluster_messages: Receiver<(NodeId, ClusterMessage)>,
     pub client_messages: Receiver<(ClientId, ClientMessage)>,
+    pub proxy_messages: Receiver<ProxyMessage>,
 }
 
 fn get_addrs(config: OmniPaxosKVConfig) -> (SocketAddr, Vec<SocketAddr>) {
@@ -67,22 +75,31 @@ impl Network {
         cluster_connections.resize_with(peer_addresses.len(), Default::default);
         let (cluster_message_sender, cluster_messages) = tokio::sync::mpsc::channel(batch_size);
         let (client_message_sender, client_messages) = tokio::sync::mpsc::channel(batch_size);
+        let (proxy_message_sender, proxy_messages) = tokio::sync::mpsc::channel(batch_size);
         let mut network = Self {
             peers: peer_addresses.iter().map(|(id, _)| *id).collect(),
             peer_connections: cluster_connections,
             client_connections: HashMap::new(),
+            proxy_connection: Arc::new(Mutex::new(None)),
             max_client_id: Arc::new(Mutex::new(0)),
             batch_size,
             client_message_sender,
+            proxy_message_sender,
             cluster_message_sender,
+            start_signal: Arc::new(Mutex::new(None)),
             cluster_messages,
             client_messages,
+            proxy_messages,
         };
         let num_clients = config.local.num_clients;
         network
             .initialize_connections(id, num_clients, peer_addresses, listen_address)
             .await;
         network
+    }
+
+    pub fn set_start_signal(&self, start_time: Timestamp) {
+        *self.start_signal.lock().unwrap() = Some(start_time);
     }
 
     async fn initialize_connections(
@@ -93,7 +110,7 @@ impl Network {
         listen_address: SocketAddr,
     ) {
         let (connection_sink, mut connection_source) = mpsc::channel(30);
-        let listener_handle =
+        let _listener_handle =
             self.spawn_connection_listener(connection_sink.clone(), listen_address);
         self.spawn_peer_connectors(connection_sink.clone(), id, peers);
         while let Some(new_connection) = connection_source.recv().await {
@@ -111,7 +128,6 @@ impl Network {
             let all_clients_connected = self.client_connections.len() >= num_clients;
             let all_cluster_connected = self.peer_connections.iter().all(|c| c.is_some());
             if all_clients_connected && all_cluster_connected {
-                listener_handle.abort();
                 break;
             }
         }
@@ -123,8 +139,11 @@ impl Network {
         listen_address: SocketAddr,
     ) -> tokio::task::JoinHandle<()> {
         let client_sender = self.client_message_sender.clone();
+        let proxy_sender = self.proxy_message_sender.clone();
         let cluster_sender = self.cluster_message_sender.clone();
         let max_client_id_handle = self.max_client_id.clone();
+        let proxy_connection = self.proxy_connection.clone();
+        let start_signal = self.start_signal.clone();
         let batch_size = self.batch_size;
         tokio::spawn(async move {
             let listener = TcpListener::bind(listen_address).await.unwrap();
@@ -136,9 +155,12 @@ impl Network {
                         tokio::spawn(Self::handle_incoming_connection(
                             tcp_stream,
                             client_sender.clone(),
+                            proxy_sender.clone(),
                             cluster_sender.clone(),
                             connection_sender.clone(),
                             max_client_id_handle.clone(),
+                            proxy_connection.clone(),
+                            start_signal.clone(),
                             batch_size,
                         ));
                     }
@@ -151,9 +173,12 @@ impl Network {
     async fn handle_incoming_connection(
         connection: TcpStream,
         client_message_sender: Sender<(ClientId, ClientMessage)>,
+        proxy_message_sender: Sender<ProxyMessage>,
         cluster_message_sender: Sender<(NodeId, ClusterMessage)>,
         connection_sender: Sender<NewConnection>,
         max_client_id_handle: Arc<Mutex<ClientId>>,
+        proxy_connection: Arc<Mutex<Option<ProxyConnection>>>,
+        start_signal: Arc<Mutex<Option<Timestamp>>>,
         batch_size: usize,
     ) {
         // Identify connector's ID and type by handshake
@@ -185,6 +210,21 @@ impl Network {
                     client_message_sender,
                 ))
             }
+            Some(Ok(RegistrationMessage::ProxyRegister)) => {
+                info!("Identified connection from proxy");
+                let underlying_stream = registration_connection.into_inner().into_inner();
+                let mut connection = ProxyConnection::new(
+                    PROXY_CLIENT_ID,
+                    underlying_stream,
+                    batch_size,
+                    proxy_message_sender,
+                );
+                if let Some(start_time) = *start_signal.lock().unwrap() {
+                    let _ = connection.send(ServerMessage::StartSignal(start_time));
+                }
+                *proxy_connection.lock().unwrap() = Some(connection);
+                return;
+            }
             Some(Err(err)) => {
                 error!("Error deserializing handshake: {:?}", err);
                 return;
@@ -194,7 +234,9 @@ impl Network {
                 return;
             }
         };
-        connection_sender.send(new_connection).await.unwrap();
+        if let Err(err) = connection_sender.send(new_connection).await {
+            warn!("Dropping new connection: {err}");
+        }
     }
 
     fn spawn_peer_connectors(
@@ -269,11 +311,28 @@ impl Network {
         }
     }
 
+    pub fn send_to_proxy(&mut self, msg: ServerMessage) {
+        let mut proxy_connection = self.proxy_connection.lock().unwrap();
+        if proxy_connection.is_none() {
+            warn!("No proxy connections to send message");
+            return;
+        }
+        if let Some(connection) = proxy_connection.as_mut() {
+            if let Err(err) = connection.send(msg) {
+                warn!("Couldn't send msg to proxy: {err}");
+                *proxy_connection = None;
+            }
+        }
+    }
+
     // Removes all client and peer connections and ends their corresponding tasks.
     #[allow(dead_code)]
     pub fn shutdown(&mut self) {
         for (_, client_connection) in self.client_connections.drain() {
             client_connection.close();
+        }
+        if let Some(proxy_connection) = self.proxy_connection.lock().unwrap().take() {
+            proxy_connection.close();
         }
         for peer_connection in self.peer_connections.drain(..) {
             if let Some(connection) = peer_connection {
@@ -373,6 +432,103 @@ struct ClientConnection {
     reader_task: JoinHandle<()>,
     writer_task: JoinHandle<()>,
     outgoing_messages: UnboundedSender<ServerMessage>,
+}
+
+// Proxy-originated messages carry their original client id in the DomMessage.
+const PROXY_CLIENT_ID: ClientId = 0;
+
+type FromProxyConnection = Framed<
+    FramedRead<tokio::net::tcp::OwnedReadHalf, LengthDelimitedCodec>,
+    ProxyMessage,
+    (),
+    Bincode<ProxyMessage, ()>,
+>;
+
+type ToProxyConnection = Framed<
+    FramedWrite<tokio::net::tcp::OwnedWriteHalf, LengthDelimitedCodec>,
+    (),
+    ServerMessage,
+    Bincode<(), ServerMessage>,
+>;
+
+fn frame_proxy_connection(stream: TcpStream) -> (FromProxyConnection, ToProxyConnection) {
+    let (reader, writer) = stream.into_split();
+    let stream = FramedRead::new(reader, LengthDelimitedCodec::new());
+    let sink = FramedWrite::new(writer, LengthDelimitedCodec::new());
+    (
+        FromProxyConnection::new(stream, Bincode::default()),
+        ToProxyConnection::new(sink, Bincode::default()),
+    )
+}
+
+struct ProxyConnection {
+    reader_task: JoinHandle<()>,
+    writer_task: JoinHandle<()>,
+    outgoing_messages: UnboundedSender<ServerMessage>,
+}
+
+impl ProxyConnection {
+    pub fn new(
+        proxy_id: ClientId,
+        connection: TcpStream,
+        batch_size: usize,
+        proxy_messages: Sender<ProxyMessage>,
+    ) -> Self {
+        let (reader, mut writer) = frame_proxy_connection(connection);
+        let reader_task = tokio::spawn(async move {
+            let mut buf_reader = reader.ready_chunks(batch_size);
+            while let Some(messages) = buf_reader.next().await {
+                for msg in messages {
+                    match msg {
+                        Ok(m) => {
+                            // Forward the ProxyMessage for dedicated proxy handling.
+                            let _ = proxy_id;
+                            if let Err(_) = proxy_messages.send(m).await {
+                                break;
+                            }
+                        }
+                        Err(err) => error!("Error deserializing proxy message: {:?}", err),
+                    }
+                }
+            }
+        });
+
+        let (message_tx, mut message_rx) = mpsc::unbounded_channel();
+        let writer_task = tokio::spawn(async move {
+            let mut buffer = Vec::with_capacity(batch_size);
+            while message_rx.recv_many(&mut buffer, batch_size).await != 0 {
+                for msg in buffer.drain(..) {
+                    if let Err(err) = writer.feed(msg).await {
+                        error!("Couldn't send message to proxy {proxy_id}: {err}");
+                        error!("Killing connection to proxy {proxy_id}");
+                        return;
+                    }
+                }
+                if let Err(err) = writer.flush().await {
+                    error!("Couldn't send message to proxy {proxy_id}: {err}");
+                    error!("Killing connection to proxy {proxy_id}");
+                    return;
+                }
+            }
+        });
+        ProxyConnection {
+            reader_task,
+            writer_task,
+            outgoing_messages: message_tx,
+        }
+    }
+
+    pub fn send(
+        &mut self,
+        msg: ServerMessage,
+    ) -> Result<(), mpsc::error::SendError<ServerMessage>> {
+        self.outgoing_messages.send(msg)
+    }
+
+    fn close(self) {
+        self.reader_task.abort();
+        self.writer_task.abort();
+    }
 }
 
 impl ClientConnection {

@@ -2,7 +2,6 @@ use std::{env, time::Duration};
 
 use config::{Config, ConfigError, Environment, File};
 use omnipaxos_kv::common::{kv::NodeId, utils::Timestamp};
-use omnipaxos_kv::clock::ClockConfig;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -10,11 +9,12 @@ pub struct ClientConfig {
     pub location: String,
     pub server_id: NodeId,
     pub server_address: String,
+    pub proxy_address: String,
+    pub use_proxy: bool,
     pub requests: Vec<RequestInterval>,
     pub sync_time: Option<Timestamp>,
     pub summary_filepath: String,
     pub output_filepath: String,
-    pub clock: ClockConfig,
 }
 
 impl ClientConfig {
@@ -30,6 +30,7 @@ impl ClientConfig {
             .build()?;
         config.try_deserialize()
     }
+
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
