@@ -21,6 +21,13 @@ pub struct ClientData {
 }
 
 impl ClientData {
+    pub fn new() -> Self {
+        Self {
+            request_data: Vec::new(),
+            response_count: 0,
+        }
+    }
+
     pub fn new_request(&mut self, is_write: bool) {
         let data = RequestData {
             request_time: Utc::now().timestamp_millis(),

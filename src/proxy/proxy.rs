@@ -2,6 +2,7 @@ use log::{info, warn};
 
 use crate::clock::ClockSim;
 use crate::common::kv::{ClientId, NodeId};
+use crate::telemetry::TelemetryWriter;
 use crate::common::messages::{
     ClientMessage, CommitMessage, FastReply, FastReplyResult, ProxyMessage, ServerMessage, SlowPathReply,
 };
@@ -25,9 +26,7 @@ pub struct Proxy {
     clock: ClockSim,
     f: usize, // Amount of replicas that can fail
     n_servers: usize,
-    metrics: crate::common::kv::SystemMetrics,
-    throughput_window_count: usize,
-    throughput_window_start: Instant,
+    telemetry: TelemetryWriter,
 }
 
 impl Proxy {
@@ -49,6 +48,7 @@ impl Proxy {
         let n_replicas = config.targets().len() - 1;
         let f = (n_replicas - 1) / 2;
         let n_servers = config.targets().len();
+        let metrics_filepath = config.metrics_filepath.clone();
         Self {
             config,
             network,
@@ -63,9 +63,7 @@ impl Proxy {
             ),
             f,
             n_servers,
-            metrics: crate::common::kv::SystemMetrics::new(),
-            throughput_window_count: 0,
-            throughput_window_start: Instant::now(),
+            telemetry: TelemetryWriter::new(metrics_filepath),
         }
     }
 
@@ -110,22 +108,7 @@ impl Proxy {
     }
 
     fn flush_metrics(&mut self) {
-        use std::io::Write;
-        // Compute requests/second over the elapsed window, then reset.
-        let elapsed_secs = self.throughput_window_start.elapsed().as_secs_f64();
-        self.metrics.throughput_rps = if elapsed_secs > 0.0 {
-            self.throughput_window_count as f64 / elapsed_secs
-        } else {
-            0.0
-        };
-        self.throughput_window_count = 0;
-        self.throughput_window_start = Instant::now();
-
-        let json = self.metrics.to_json();
-        match std::fs::File::create(&self.config.metrics_filepath) {
-            Ok(mut f) => { let _ = f.write_all(json.as_bytes()); }
-            Err(e) => warn!("Failed to write metrics to {}: {e}", self.config.metrics_filepath),
-        }
+        self.telemetry.flush();
     }
 
     async fn handle_client_messages(&mut self, messages: &mut Vec<(ClientId, ClientMessage)>) {
@@ -135,8 +118,8 @@ impl Proxy {
                     let key = ClientRequestKey::new(client_id, *command_id);
                     self.pending.insert(key, ());
                     self.pending_timestamps.insert(key, Instant::now());
-                    self.metrics.total_sent += 1;
-                    self.metrics.recompute_ratios();
+                    self.telemetry.metrics.total_sent += 1;
+                    self.telemetry.metrics.recompute_ratios();
                 }
             }
             let send_time = self.clock.get_time();
@@ -201,25 +184,22 @@ impl Proxy {
             state.replies.clear();
         }
         // 3. Same ballot: insert
-        state.replies.push(reply.clone());        
+        state.replies.push(reply.clone());
+
+        if let Some(ts) = self.pending_timestamps.get(&key) {
+            let latency_us = ts.elapsed().as_micros();
+            let entry = self.telemetry.metrics.nodes.entry(reply.replica_id).or_default();
+            entry.fast_path_count += 1;
+            entry.push_fast_path_latency(latency_us);
+        }
 
         if let Some(leader_reply) = self.can_commit(key) {
             if let Some(ts) = self.pending_timestamps.remove(&key) {
-                let latency_us = ts.elapsed().as_micros();
-                let contributing_ids: Vec<NodeId> = self
-                    .reply_sets
-                    .get(&key)
-                    .map(|s| s.replies.iter().map(|r| r.replica_id).collect())
-                    .unwrap_or_default();
-                for nid in contributing_ids {
-                    let entry = self.metrics.nodes.entry(nid).or_default();
-                    entry.fast_path_count += 1;
-                    entry.push_fast_path_latency(latency_us);
-                }
+                let _ = ts; // already recorded per-node above; latency used at slow-path only
             }
-            self.metrics.fast_path_committed += 1;
-            self.metrics.recompute_ratios();
-            self.throughput_window_count += 1;
+            self.telemetry.metrics.fast_path_committed += 1;
+            self.telemetry.metrics.recompute_ratios();
+            self.telemetry.throughput_window_count += 1;
             self.reply_to_client(leader_reply, key);
             // Will send the commit message to all servers
             self.send_commit_message(CommitMessage {
@@ -253,10 +233,10 @@ impl Proxy {
             if let Some(result) = state.result.take() {
                 if let Some(ts) = self.pending_timestamps.remove(&key) {
                     let latency_us = ts.elapsed().as_micros();
-                    self.metrics.push_slow_path_latency(latency_us);
-                    self.metrics.slow_path_committed += 1;
-                    self.metrics.recompute_ratios();
-                    self.throughput_window_count += 1;
+                    self.telemetry.metrics.push_slow_path_latency(latency_us);
+                    self.telemetry.metrics.slow_path_committed += 1;
+                    self.telemetry.metrics.recompute_ratios();
+                    self.telemetry.throughput_window_count += 1;
                 }
                 self.reply_sets.remove(&key);
                 self.slow_reply_sets.remove(&key);

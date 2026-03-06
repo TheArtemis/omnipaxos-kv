@@ -168,66 +168,10 @@ pub mod kv {
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
 
-    pub const MAX_LATENCY_SAMPLES: usize = 1000;
-    
-    #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-    pub struct Metrics {
-        /// Number of times this node invoked fast-path.
-        pub fast_path_count: usize,
-        
-        pub fast_path_latencies_us: Vec<u128>,
-    }
-
-    impl Metrics {
-        pub fn push_fast_path_latency(&mut self, latency: u128) {
-            self.fast_path_latencies_us.push(latency);
-            if self.fast_path_latencies_us.len() > MAX_LATENCY_SAMPLES {
-                let excess = self.fast_path_latencies_us.len() - MAX_LATENCY_SAMPLES;
-                self.fast_path_latencies_us.drain(0..excess);
-            }
-        }
-    }
-
-    /// System-wide aggregated metrics written to the output JSON as a single file.
-    #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-    pub struct SystemMetrics {
-        pub nodes: std::collections::HashMap<NodeId, Metrics>,
-        pub total_sent: usize,
-        pub fast_path_committed: usize,
-        pub slow_path_committed: usize,
-        pub fast_path_ratio: f64,
-        pub slow_path_ratio: f64,
-        pub fast_path_response_ratio: f64,
-        pub slow_path_response_ratio: f64,
-        pub overall_response_ratio: f64,
-        pub throughput_rps: f64,
-        pub slow_path_latencies_us: Vec<u128>,
-    }
-
-    impl SystemMetrics {}
-
-    impl SystemMetrics {
-        pub fn push_slow_path_latency(&mut self, latency: u128) {
-            self.slow_path_latencies_us.push(latency);
-            if self.slow_path_latencies_us.len() > MAX_LATENCY_SAMPLES {
-                let excess = self.slow_path_latencies_us.len() - MAX_LATENCY_SAMPLES;
-                self.slow_path_latencies_us.drain(0..excess);
-            }
-        }
-        pub fn new() -> Self {
-            Self::default()
-        }
-
-        pub fn recompute_ratios(&mut self) {
-            let total = self.fast_path_committed + self.slow_path_committed;
-            self.fast_path_ratio = if total > 0 { self.fast_path_committed as f64 / total as f64 } else { 0.0 };
-            self.slow_path_ratio = if total > 0 { self.slow_path_committed as f64 / total as f64 } else { 0.0 };
-        }
-
-        pub fn to_json(&self) -> String {
-            serde_json::to_string_pretty(self).unwrap()
-        }
-    }
+    // Re-export telemetry types so existing `common::kv::*` imports keep working.
+    pub use crate::telemetry::{MAX_LATENCY_SAMPLES, NodeMetrics, SystemMetrics};
+    /// Backward-compatible alias for [`NodeMetrics`].
+    pub type Metrics = NodeMetrics;
 
     pub type CommandId = usize;
     pub type ClientId = u64;
