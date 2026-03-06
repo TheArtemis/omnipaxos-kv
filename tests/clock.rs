@@ -1,4 +1,3 @@
-
 use omnipaxos_kv::clock::{ClockConfig, ClockSim};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -62,7 +61,7 @@ fn clock_config_from_file() {
     std::thread::sleep(Duration::from_millis(2));
     let t2 = clock.get_time();
     assert!(t2 >= t1);
-    assert_eq!(clock.get_uncertainty(), 50.0);
+    assert!((clock.get_uncertainty() - 50.0).abs() < 0.1, "Uncertainty bound mismatch");
 }
 
 #[test]

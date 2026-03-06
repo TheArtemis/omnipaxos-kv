@@ -1,4 +1,4 @@
-use crate::clock::{self, ClockSim};
+use crate::clock::ClockSim;
 use crate::common::kv::{ClientId, CommandId};
 use crate::dom::config::DomConfig;
 use crate::dom::request::DomMessage;
@@ -7,8 +7,6 @@ use std::collections::{BinaryHeap, HashMap};
 use std::time::Duration;
 
 pub struct Dom {
-    config: DomConfig,
-
     // Early buffer: min-heap by DomMessage::deadline
     early_buffer: BinaryHeap<Reverse<DomMessage>>,
     
@@ -33,7 +31,6 @@ impl Dom {
             config.clock.sync_freq,
         );
         Self {
-            config,
             early_buffer: BinaryHeap::new(),
             late_buffer: HashMap::new(),
             clock,

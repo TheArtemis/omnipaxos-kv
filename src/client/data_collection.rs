@@ -7,9 +7,6 @@ use serde::Serialize;
 
 use crate::configs::ClientConfig;
 
-#[cfg(feature = "correctness-check")]
-use omnipaxos_kv::correctness::operation_history::{OperationHistory, Input, Output};
-
 #[derive(Debug, Serialize, Clone, Copy)]
 struct RequestData {
     request_time: Timestamp,
@@ -21,8 +18,6 @@ struct RequestData {
 pub struct ClientData {
     request_data: Vec<RequestData>,
     response_count: usize,
-    #[cfg(feature = "correctness-check")]
-    correctness_tracker: Option<OperationHistory>,
 }
 
 impl ClientData {
@@ -34,49 +29,6 @@ impl ClientData {
         ClientData {
             request_data: Vec::new(),
             response_count: 0,
-            #[cfg(feature = "correctness-check")]
-            correctness_tracker: None,
-        }
-    }
-
-    #[cfg(feature = "correctness-check")]
-    pub fn new_with_correctness(client_id: omnipaxos_kv::common::kv::ClientId) -> Self {
-        ClientData {
-            request_data: Vec::new(),
-            response_count: 0,
-            correctness_tracker: Some(OperationHistory::new(client_id)),
-        }
-    }
-
-    #[cfg(feature = "correctness-check")]
-    pub fn record_operation(&mut self, input: Input) -> Option<usize> {
-        if let Some(ref mut tracker) = self.correctness_tracker {
-            Some(tracker.record_operation(input))
-        } else {
-            None
-        }
-    }
-
-    #[cfg(feature = "correctness-check")]
-    pub fn complete_operation(&mut self, op_index: usize, output: Output) {
-        if let Some(ref mut tracker) = self.correctness_tracker {
-            tracker.complete_operation(op_index, output);
-        }
-    }
-
-    #[cfg(feature = "correctness-check")]
-    pub fn set_sync_time(&mut self, sync_time_ms: i64) {
-        if let Some(ref mut tracker) = self.correctness_tracker {
-            tracker.set_sync_time(sync_time_ms);
-        }
-    }
-
-    #[cfg(feature = "correctness-check")]
-    pub fn export_history_json(&self, file_path: &str) -> Result<(), std::io::Error> {
-        if let Some(ref tracker) = self.correctness_tracker {
-            tracker.export_json(file_path)
-        } else {
-            Ok(())
         }
     }
 
