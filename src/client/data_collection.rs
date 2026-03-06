@@ -21,19 +21,6 @@ pub struct ClientData {
 }
 
 impl ClientData {
-
-    /* Correctness Check Extras */
-    
-    #[cfg_attr(feature = "correctness-check", allow(dead_code))]
-    pub fn new() -> Self {
-        ClientData {
-            request_data: Vec::new(),
-            response_count: 0,
-        }
-    }
-
-    /* Normal Client Data Collection */
-
     pub fn new_request(&mut self, is_write: bool) {
         let data = RequestData {
             request_time: Utc::now().timestamp_millis(),
