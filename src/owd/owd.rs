@@ -3,10 +3,10 @@ use std::collections::hash_map::Entry;
 
 pub struct Owd {
     // HashMap one for each client sending messages
-    pub client_data: HashMap<u64, VecDeque<u64>>,
-    pub default_value: u64,
-    pub beta: f64,
-    pub window_size: u64,
+    client_data: HashMap<u64, VecDeque<u64>>,
+    default_value: u64,
+    beta: f64,
+    window_size: u64,
 }
 
 impl Owd {
