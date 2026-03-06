@@ -128,6 +128,7 @@ impl OmniPaxosServer {
                     for msg in due {
                         match msg.message {
                             ClientMessage::Append(command_id, kv_command) => {
+                                debug!("{}: early path — processing message (client_id={}, command_id={})", self.id, msg.client_id, command_id);
                                 let command = Command {
                                     client_id: msg.client_id,
                                     coordinator_id: self.id,
@@ -224,23 +225,22 @@ impl OmniPaxosServer {
         for command in commands {
             let key = (command.client_id, command.id);
             if self.proxy_command_ids.remove(&key) {
-                // execution result; other replicas send None as acknowledgement.
-                let result = if command.coordinator_id == self.id {
+                // Only the leader (coordinator) sends SlowPathReply; proxy commits on that single reply.
+                if command.coordinator_id == self.id {
                     let read = self.database.handle_command(command.kv_cmd);
-                    Some(match read {
-                        Some(r) => FastReplyResult::Read(command.id, r),
-                        None => FastReplyResult::Write(command.id),
-                    })
-                } else {
-                    None
-                };
-                let reply = SlowPathReply {
-                    replica_id: self.id,
-                    client_id: command.client_id,
-                    request_id: command.id,
-                    result,
-                };
-                self.network.send_to_proxy(ServerMessage::SlowPathReply(reply));
+                    let result = match read {
+                        Some(r) => ServerResult::Read(command.id, r),
+                        None => ServerResult::Write(command.id),
+                    };
+                    let reply = SlowPathReply {
+                        replica_id: self.id,
+                        client_id: command.client_id,
+                        request_id: command.id,
+                        result: Some(result),
+                    };
+                    debug!("{}: slow path — sending SlowPathReply (client_id={}, command_id={})", self.id, command.client_id, command.id);
+                    self.network.send_to_proxy(ServerMessage::SlowPathReply(reply));
+                }
             } else if command.coordinator_id == self.id {
                 // Non-proxy mode: coordinator responds directly to the client.
                 let read = self.database.handle_command(command.kv_cmd);
@@ -262,8 +262,8 @@ impl OmniPaxosServer {
             client_id: command.client_id,
             request_id: command.id,
             result: match read {
-                Some(read_result) => Some(FastReplyResult::Read(command.id, read_result)),
-                None => Some(FastReplyResult::Write(command.id)),
+                Some(read_result) => Some(ServerResult::Read(command.id, read_result)),
+                None => Some(ServerResult::Write(command.id)),
             },
             hash: self.log_hash.clone(),
         };

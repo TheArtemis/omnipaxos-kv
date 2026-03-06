@@ -5,7 +5,7 @@ use crate::common::kv::{ClientId, NodeId};
 use crate::telemetry::TelemetryWriter;
 use crate::common::log_hash::LogHash;
 use crate::common::messages::{
-    ClientMessage, CommitMessage, FastReply, FastReplyResult, ProxyMessage, ServerMessage, SlowPathReply,
+    ClientMessage, CommitMessage, FastReply, ServerResult, ProxyMessage, ServerMessage, SlowPathReply,
 };
 use crate::dom::request::DomMessage;
 use crate::proxy::config::{ProxyConfig, Server};
@@ -229,25 +229,23 @@ impl Proxy {
             state.result = Some(res);
         }
 
-        let majority = self.n_servers / 2 + 1;
-        if state.replies.len() >= majority {
-            if let Some(result) = state.result.take() {
-                if let Some(ts) = self.pending_timestamps.remove(&key) {
-                    let latency_us = ts.elapsed().as_micros();
-                    self.telemetry.metrics.push_slow_path_latency(latency_us);
-                    self.telemetry.metrics.slow_path_committed += 1;
-                    self.telemetry.metrics.recompute_ratios();
-                    self.telemetry.throughput_window_count += 1;
-                }
-                self.reply_sets.remove(&key);
-                self.slow_reply_sets.remove(&key);
-                let _ = self.pending.remove(&key);
-                let response = match result {
-                    FastReplyResult::Write(id) => ServerMessage::Write(id),
-                    FastReplyResult::Read(id, val) => ServerMessage::Read(id, val),
-                };
-                self.network.send_to_client(sr.client_id, response);
+        // OmniPaxos already decided this entry (majority agreed); we only need the leader's result.
+        if let Some(result) = state.result.take() {
+            if let Some(ts) = self.pending_timestamps.remove(&key) {
+                let latency_us = ts.elapsed().as_micros();
+                self.telemetry.metrics.push_slow_path_latency(latency_us);
+                self.telemetry.metrics.slow_path_committed += 1;
+                self.telemetry.metrics.recompute_ratios();
+                self.telemetry.throughput_window_count += 1;
             }
+            self.reply_sets.remove(&key);
+            self.slow_reply_sets.remove(&key);
+            let _ = self.pending.remove(&key);
+            let response = match result {
+                ServerResult::Write(id) => ServerMessage::Write(id),
+                ServerResult::Read(id, val) => ServerMessage::Read(id, val),
+            };
+            self.network.send_to_client(sr.client_id, response);
         }
     }
 
@@ -315,8 +313,8 @@ impl Proxy {
     fn reply_to_client(&mut self, committed: FastReply, key: ClientRequestKey) {
         let client_id = committed.client_id;
         let msg = match committed.result {
-            Some(FastReplyResult::Read(cmd_id, value)) => ServerMessage::Read(cmd_id, value),
-            Some(FastReplyResult::Write(cmd_id)) => ServerMessage::Write(cmd_id),
+            Some(ServerResult::Read(cmd_id, value)) => ServerMessage::Read(cmd_id, value),
+            Some(ServerResult::Write(cmd_id)) => ServerMessage::Write(cmd_id),
             None => return,
         };
         self.pending.remove(&key);

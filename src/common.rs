@@ -66,7 +66,7 @@ pub mod messages {
         pub replica_id: NodeId,
         pub client_id: ClientId,
         pub request_id: CommandId,
-        pub result: Option<FastReplyResult>, // None for the followers
+        pub result: Option<ServerResult>, // None for the followers
         pub hash: super::log_hash::LogHash,
     }
 
@@ -81,7 +81,7 @@ pub mod messages {
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
-    pub enum FastReplyResult {
+    pub enum ServerResult {
        Write(CommandId),
        Read(CommandId, Option<String>),
     }
@@ -91,7 +91,7 @@ pub mod messages {
         pub replica_id: NodeId,
         pub client_id: ClientId,
         pub request_id: CommandId,
-        pub result: Option<FastReplyResult>,
+        pub result: Option<ServerResult>,
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
