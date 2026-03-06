@@ -5,6 +5,8 @@ use log::warn;
 use omnipaxos::util::NodeId;
 use serde::{Deserialize, Serialize};
 
+use crate::common::kv::{ClientId, CommandId};
+
 pub const MAX_LATENCY_SAMPLES: usize = 1000;
 
 // ---------------------------------------------------------------------------
@@ -84,6 +86,8 @@ pub struct TelemetryWriter {
     filepath: String,
     pub throughput_window_count: usize,
     throughput_window_start: Instant,
+    /// Request send times for latency computation.
+    pending_timestamps: HashMap<(ClientId, CommandId), Instant>,
 }
 
 impl TelemetryWriter {
@@ -93,6 +97,50 @@ impl TelemetryWriter {
             filepath,
             throughput_window_count: 0,
             throughput_window_start: Instant::now(),
+            pending_timestamps: HashMap::new(),
+        }
+    }
+
+    /// Record that a client request was sent (timestamp + total_sent + ratios).
+    pub fn record_client_request(&mut self, client_id: ClientId, command_id: CommandId) {
+        self.pending_timestamps
+            .insert((client_id, command_id), Instant::now());
+        self.metrics.total_sent += 1;
+        self.metrics.recompute_ratios();
+    }
+
+    /// Record a fast-path reply from a replica (per-replica latency).
+    pub fn record_fast_reply(&mut self, replica_id: NodeId, client_id: ClientId, request_id: CommandId) {
+        if let Some(latency_us) = self
+            .pending_timestamps
+            .get(&(client_id, request_id))
+            .map(|t| t.elapsed().as_micros())
+        {
+            let entry = self.metrics.nodes.entry(replica_id).or_default();
+            entry.fast_path_count += 1;
+            entry.push_fast_path_latency(latency_us);
+        }
+    }
+
+    /// Record a fast-path commit (clear pending + committed count + ratios + throughput).
+    pub fn record_fast_path_commit(&mut self, client_id: ClientId, request_id: CommandId) {
+        self.pending_timestamps.remove(&(client_id, request_id));
+        self.metrics.fast_path_committed += 1;
+        self.metrics.recompute_ratios();
+        self.throughput_window_count += 1;
+    }
+
+    /// Record a slow-path commit (take latency + committed count + ratios + throughput).
+    pub fn record_slow_path_commit(&mut self, client_id: ClientId, request_id: CommandId) {
+        if let Some(latency_us) = self
+            .pending_timestamps
+            .remove(&(client_id, request_id))
+            .map(|t| t.elapsed().as_micros())
+        {
+            self.metrics.push_slow_path_latency(latency_us);
+            self.metrics.slow_path_committed += 1;
+            self.metrics.recompute_ratios();
+            self.throughput_window_count += 1;
         }
     }
 

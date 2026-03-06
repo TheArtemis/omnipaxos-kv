@@ -13,7 +13,6 @@ use crate::proxy::network::Network;
 use crate::proxy::types::{ClientRequestKey, ReplySetState, SlowReplySetState};
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::time::Instant;
 
 const NETWORK_BATCH_SIZE: usize = 100;
 
@@ -21,7 +20,6 @@ pub struct Proxy {
     config: ProxyConfig,
     network: Network,
     pending: HashMap<ClientRequestKey, ()>,
-    pending_timestamps: HashMap<ClientRequestKey, Instant>,
     reply_sets: HashMap<ClientRequestKey, ReplySetState>,
     slow_reply_sets: HashMap<ClientRequestKey, SlowReplySetState>,
     clock: ClockSim,
@@ -49,12 +47,11 @@ impl Proxy {
         let n_replicas = config.targets().len() - 1;
         let f = (n_replicas - 1) / 2;
         let n_servers = config.targets().len();
-        let metrics_filepath = config.metrics_filepath.clone();
+        let telemetry = TelemetryWriter::new(config.metrics_filepath.clone());
         Self {
             config,
             network,
             pending: HashMap::new(),
-            pending_timestamps: HashMap::new(),
             reply_sets: HashMap::new(),
             slow_reply_sets: HashMap::new(),
             clock: ClockSim::new(
@@ -64,7 +61,7 @@ impl Proxy {
             ),
             f,
             n_servers,
-            telemetry: TelemetryWriter::new(metrics_filepath),
+            telemetry,
         }
     }
 
@@ -118,9 +115,7 @@ impl Proxy {
                 ClientMessage::Append(command_id, _) => {
                     let key = ClientRequestKey::new(client_id, *command_id);
                     self.pending.insert(key, ());
-                    self.pending_timestamps.insert(key, Instant::now());
-                    self.telemetry.metrics.total_sent += 1;
-                    self.telemetry.metrics.recompute_ratios();
+                    self.telemetry.record_client_request(client_id, *command_id);
                 }
             }
             let send_time = self.clock.get_time();
@@ -187,20 +182,10 @@ impl Proxy {
         // 3. Same ballot: insert
         state.replies.push(reply.clone());
 
-        if let Some(ts) = self.pending_timestamps.get(&key) {
-            let latency_us = ts.elapsed().as_micros();
-            let entry = self.telemetry.metrics.nodes.entry(reply.replica_id).or_default();
-            entry.fast_path_count += 1;
-            entry.push_fast_path_latency(latency_us);
-        }
+        self.telemetry.record_fast_reply(reply.replica_id, reply.client_id, reply.request_id);
 
         if let Some(leader_reply) = self.can_commit(key) {
-            if let Some(ts) = self.pending_timestamps.remove(&key) {
-                let _ = ts; // already recorded per-node above; latency used at slow-path only
-            }
-            self.telemetry.metrics.fast_path_committed += 1;
-            self.telemetry.metrics.recompute_ratios();
-            self.telemetry.throughput_window_count += 1;
+            self.telemetry.record_fast_path_commit(reply.client_id, reply.request_id);
             self.reply_to_client(leader_reply, key);
             // Will send the commit message to all servers
             self.send_commit_message(CommitMessage {
@@ -231,13 +216,7 @@ impl Proxy {
 
         // OmniPaxos already decided this entry (majority agreed); we only need the leader's result.
         if let Some(result) = state.result.take() {
-            if let Some(ts) = self.pending_timestamps.remove(&key) {
-                let latency_us = ts.elapsed().as_micros();
-                self.telemetry.metrics.push_slow_path_latency(latency_us);
-                self.telemetry.metrics.slow_path_committed += 1;
-                self.telemetry.metrics.recompute_ratios();
-                self.telemetry.throughput_window_count += 1;
-            }
+            self.telemetry.record_slow_path_commit(sr.client_id, sr.request_id);
             self.reply_sets.remove(&key);
             self.slow_reply_sets.remove(&key);
             let _ = self.pending.remove(&key);
