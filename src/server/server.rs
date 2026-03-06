@@ -6,7 +6,7 @@ use omnipaxos::{
     util::{LogEntry, NodeId},
     OmniPaxos, OmniPaxosConfig,
 };
-use omnipaxos_kv::common::{kv::*, log_hash::LogHash, messages::*, utils::Timestamp};
+use omnipaxos_kv::{clock, common::{kv::*, log_hash::LogHash, messages::*, utils::Timestamp}};
 use omnipaxos_kv::dom::dom::Dom;
 use omnipaxos_kv::dom::config::DomConfig;
 use omnipaxos_storage::memory_storage::MemoryStorage;
@@ -327,6 +327,8 @@ impl OmniPaxosServer {
             match proxy_msg {
                 ProxyMessage::Append(dom_message) => {
                     // Let the dom handle the message
+                    let message_passing_delay = self.dom.get_time() - dom_message.send_time;
+                    self.dom.add_element_to_owd(dom_message.client_id, message_passing_delay);
                     self.dom.push_by_deadline(dom_message.clone());
 
                     if let Some((leader_id, _)) = self.omnipaxos.get_current_leader() {

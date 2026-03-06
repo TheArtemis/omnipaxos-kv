@@ -2,6 +2,7 @@ use crate::clock::{self, ClockSim};
 use crate::common::kv::{ClientId, CommandId};
 use crate::dom::config::DomConfig;
 use crate::dom::request::DomMessage;
+use crate::owd::owd::Owd;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::time::Duration;
@@ -19,6 +20,9 @@ pub struct Dom {
 
     // moment in time where the last message from the early buffer has been released
     last_released_command: u64, 
+
+    // owd data strcture
+    owd: Owd,
 
     // Release messages job
 
@@ -42,12 +46,27 @@ impl Dom {
             late_buffer: HashMap::new(),
             clock,
             last_released_command: 0,
+            owd: Owd::new(100, 0.01, 1000),
         }
     }
 
     // Needed to verify whether late_buffer is empty 
     pub fn get_late_buffer_size(&self) -> u64{
         self.late_buffer.len() as u64
+    }
+
+    // Add an element into owd
+    pub fn add_element_to_owd(&mut self, client_id: ClientId, new_elem: u64){
+        self.owd.add_element(client_id, new_elem)
+    }
+
+    // get time
+    pub fn get_time(&mut self) -> u64{
+        self.clock.get_time()
+    }
+    // request deadline to owd
+    pub fn request_deadline_from_owd(&mut self, client_id: ClientId) -> u64{
+        self.owd.get_adaptive_deadline(client_id)
     }
 
     // Implemented for testing
