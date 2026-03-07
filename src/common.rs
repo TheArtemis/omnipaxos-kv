@@ -46,7 +46,6 @@ pub mod messages {
         StartSignal(Timestamp),
         FastReply(FastReply),
         SlowPathReply(SlowPathReply),
-        DeadlineLengthRequestReply(NodeId, u64),
     }
 
     impl ServerMessage {
@@ -57,7 +56,6 @@ pub mod messages {
                 ServerMessage::StartSignal(_) => unimplemented!(),
                 ServerMessage::FastReply(fr) => fr.request_id,
                 ServerMessage::SlowPathReply(sr) => sr.request_id,
-                ServerMessage::DeadlineLengthRequestReply(_, _) => unimplemented!(),
             }
         }
     }
@@ -70,6 +68,8 @@ pub mod messages {
         pub request_id: CommandId,
         pub result: Option<ServerResult>, // None for the followers
         pub hash: super::log_hash::LogHash,
+        /// OWD deadline length (micros), piggybacked on reply.
+        pub deadline_length: u64,
     }
 
     impl FastReply {
@@ -94,6 +94,8 @@ pub mod messages {
         pub client_id: ClientId,
         pub request_id: CommandId,
         pub result: Option<ServerResult>,
+        /// OWD deadline length (micros), piggybacked on reply.
+        pub deadline_length: u64,
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -106,7 +108,6 @@ pub mod messages {
     pub enum ProxyMessage {
         Commit(CommitMessage),
         Append(DomMessage),
-        DeadlineLengthRequest(u64, String),
     }
 }
 

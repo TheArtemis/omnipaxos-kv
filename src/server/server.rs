@@ -233,11 +233,13 @@ impl OmniPaxosServer {
                         Some(r) => ServerResult::Read(command.id, r),
                         None => ServerResult::Write(command.id),
                     };
+                    let deadline_length = self.dom.request_deadline_from_owd(DEFAULT_PROXY_ADDRESS_KEY);
                     let reply = SlowPathReply {
                         replica_id: self.id,
                         client_id: command.client_id,
                         request_id: command.id,
                         result: Some(result),
+                        deadline_length,
                     };
                     debug!("{}: slow path — sending SlowPathReply (client_id={}, command_id={})", self.id, command.client_id, command.id);
                     self.network.send_to_proxy(ServerMessage::SlowPathReply(reply));
@@ -257,6 +259,7 @@ impl OmniPaxosServer {
     fn update_database_and_respond_fast(&mut self, command: Command) {
         let read = self.database.handle_command(command.kv_cmd);
         let ballot = self.omnipaxos.get_promise();
+        let deadline_length = self.dom.request_deadline_from_owd(DEFAULT_PROXY_ADDRESS_KEY);
         let fast_reply = FastReply {
             ballot,
             replica_id: self.id,
@@ -267,6 +270,7 @@ impl OmniPaxosServer {
                 None => Some(ServerResult::Write(command.id)),
             },
             hash: self.log_hash.clone(),
+            deadline_length,
         };
 
         let msg = ServerMessage::FastReply(fast_reply);
@@ -282,6 +286,7 @@ impl OmniPaxosServer {
     // Replicas just respond with a fast reply without updating the database
     fn respond_fast(&mut self, command: Command) {
         let ballot = self.omnipaxos.get_promise();
+        let deadline_length = self.dom.request_deadline_from_owd(DEFAULT_PROXY_ADDRESS_KEY);
         let fast_reply = FastReply {
             ballot,
             replica_id: self.id,
@@ -289,6 +294,7 @@ impl OmniPaxosServer {
             request_id: command.id,
             result: None,
             hash: self.log_hash.clone(),
+            deadline_length,
         };
 
         let msg = ServerMessage::FastReply(fast_reply);
@@ -371,30 +377,10 @@ impl OmniPaxosServer {
                 ProxyMessage::Commit(commit_message) => {
                     self.handle_commit_message(commit_message);
                 }
-                ProxyMessage::DeadlineLengthRequest(proxy_network_address, request) => {
-                    if request == "give me deadline" {
-                        self.handle_deadline_length_request(proxy_network_address);
-                    } else {
-                        warn!(
-                            "{}: Unexpected deadline request payload from proxy: {}",
-                            self.id, request
-                        );
-                    }
-                }
             }
         }
         self.drain_late_buffer();
         self.send_outgoing_msgs();
-    }
-
-    fn handle_deadline_length_request(&mut self, proxy_network_address: u64) {
-        let deadline = self.dom.request_deadline_from_owd(proxy_network_address);
-        debug!(
-            "{}: replying to proxy key {} with deadline {}",
-            self.id, proxy_network_address, deadline
-        );
-        self.network
-            .send_to_proxy(ServerMessage::DeadlineLengthRequestReply(self.id, deadline));
     }
 
     fn drain_late_buffer(&mut self) {
