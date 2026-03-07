@@ -86,9 +86,13 @@ impl Proxy {
     pub async fn run(&mut self) {
         let mut client_msg_buf = Vec::with_capacity(NETWORK_BATCH_SIZE);
         let mut server_msg_buf = Vec::with_capacity(NETWORK_BATCH_SIZE);
+        let shutdown_signal = wait_for_shutdown_signal();
+        tokio::pin!(shutdown_signal);
         let start = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
         let mut metrics_flush_interval = tokio::time::interval_at(start, std::time::Duration::from_secs(1));
         metrics_flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut deadline_request_interval = tokio::time::interval(std::time::Duration::from_secs(3));
+        deadline_request_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 _ = self.network.client_messages.recv_many(&mut client_msg_buf, NETWORK_BATCH_SIZE) => {
@@ -100,8 +104,12 @@ impl Proxy {
                 _ = metrics_flush_interval.tick() => {
                     self.flush_metrics();
                 },
-                _ = tokio::signal::ctrl_c() => {
+                _ = deadline_request_interval.tick() => {
+                    self.send_deadline_length_request().await;
+                },
+                _ = &mut shutdown_signal => {
                     self.flush_metrics();
+                    self.network.shutdown();
                     return;
                 },
             }
@@ -147,6 +155,9 @@ impl Proxy {
                 }
                 ServerMessage::FastReply(fast_reply) => {
                     self.handle_fast_reply(fast_reply).await;
+                }
+                ServerMessage::DeadlineLengthRequestReply(node_id, deadline_length) => {
+                    self.handle_deadline_length_request_reply(node_id, deadline_length);
                 }
                 other => {
                     warn!("Unexpected server message on proxy connection: {other:?}");
@@ -312,5 +323,41 @@ impl Proxy {
                 .send_to_server(server.id, ProxyMessage::Commit(commit_message.clone()))
                 .await;
         }
+    }
+
+    async fn send_deadline_length_request(&mut self) {
+        let request = ProxyMessage::DeadlineLengthRequest(
+            DEFAULT_PROXY_ADDRESS_KEY,
+            "give me deadline".to_string(),
+        );
+        for server in self.config.targets() {
+            self.network
+                .send_to_server(server.id, request.clone())
+                .await;
+        }
+    }
+
+    fn handle_deadline_length_request_reply(&mut self, node_id: NodeId, deadline_length: u64) {
+        debug!("Received deadline update from node {node_id}: {deadline_length}");
+        // HashMap::insert performs upsert semantics: existing value is replaced.
+        self.client_deadlines.insert(node_id, deadline_length);
+    }
+}
+
+async fn wait_for_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut terminate = signal(SignalKind::terminate())
+            .expect("failed to install SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {},
+            _ = terminate.recv() => {},
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
     }
 }

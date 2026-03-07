@@ -6,7 +6,7 @@ use omnipaxos::{
     util::{LogEntry, NodeId},
     OmniPaxos, OmniPaxosConfig,
 };
-use omnipaxos_kv::{clock, common::{kv::*, log_hash::LogHash, messages::*, utils::Timestamp}};
+use omnipaxos_kv::{common::{kv::*, log_hash::LogHash, messages::*, utils::Timestamp}, proxy::proxy::DEFAULT_PROXY_ADDRESS_KEY};
 use omnipaxos_kv::dom::dom::Dom;
 use omnipaxos_kv::dom::config::DomConfig;
 use omnipaxos_storage::memory_storage::MemoryStorage;
@@ -21,6 +21,7 @@ const LEADER_WAIT: Duration = Duration::from_secs(1);
 const ELECTION_TIMEOUT: Duration = Duration::from_secs(1);
 const STATS_FLUSH_INTERVAL: Duration = Duration::from_secs(5);
 const LATE_BUFFER_DRAIN_INTERVAL: Duration = Duration::from_millis(10);
+
 
 #[derive(Debug, Serialize)]
 struct ServerStats<'a> {
@@ -363,16 +364,37 @@ impl OmniPaxosServer {
                         }
                     }
                     let message_passing_delay = self.dom.get_time() - dom_message.send_time;
-                    self.dom.add_element_to_owd(dom_message.client_id, message_passing_delay);
+                    self.dom
+                        .add_element_to_owd(DEFAULT_PROXY_ADDRESS_KEY, message_passing_delay);
                     self.dom.push_by_deadline(dom_message);
                 }
                 ProxyMessage::Commit(commit_message) => {
                     self.handle_commit_message(commit_message);
                 }
+                ProxyMessage::DeadlineLengthRequest(proxy_network_address, request) => {
+                    if request == "give me deadline" {
+                        self.handle_deadline_length_request(proxy_network_address);
+                    } else {
+                        warn!(
+                            "{}: Unexpected deadline request payload from proxy: {}",
+                            self.id, request
+                        );
+                    }
+                }
             }
         }
         self.drain_late_buffer();
         self.send_outgoing_msgs();
+    }
+
+    fn handle_deadline_length_request(&mut self, proxy_network_address: u64) {
+        let deadline = self.dom.request_deadline_from_owd(proxy_network_address);
+        debug!(
+            "{}: replying to proxy key {} with deadline {}",
+            self.id, proxy_network_address, deadline
+        );
+        self.network
+            .send_to_proxy(ServerMessage::DeadlineLengthRequestReply(self.id, deadline));
     }
 
     fn drain_late_buffer(&mut self) {

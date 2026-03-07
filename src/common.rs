@@ -46,6 +46,7 @@ pub mod messages {
         StartSignal(Timestamp),
         FastReply(FastReply),
         SlowPathReply(SlowPathReply),
+        DeadlineLengthRequestReply(NodeId, u64),
     }
 
     impl ServerMessage {
@@ -56,6 +57,7 @@ pub mod messages {
                 ServerMessage::StartSignal(_) => unimplemented!(),
                 ServerMessage::FastReply(fr) => fr.request_id,
                 ServerMessage::SlowPathReply(sr) => sr.request_id,
+                ServerMessage::DeadlineLengthRequestReply(_, _) => unimplemented!(),
             }
         }
     }
@@ -104,6 +106,7 @@ pub mod messages {
     pub enum ProxyMessage {
         Commit(CommitMessage),
         Append(DomMessage),
+        DeadlineLengthRequest(u64, String),
     }
 }
 
