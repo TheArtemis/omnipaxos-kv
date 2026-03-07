@@ -26,6 +26,7 @@ pub struct Proxy {
     f: usize, // Amount of replicas that can fail
     n_servers: usize,
     telemetry: TelemetryWriter,
+    client_deadlines: HashMap<ClientId, u64>,
 }
 
 impl Proxy {
@@ -48,6 +49,7 @@ impl Proxy {
         let f = (n_replicas - 1) / 2;
         let n_servers = config.targets().len();
         let telemetry = TelemetryWriter::new(config.metrics_filepath.clone());
+        let client_deadlines = HashMap::new();
         Self {
             config,
             network,
@@ -62,6 +64,7 @@ impl Proxy {
             f,
             n_servers,
             telemetry,
+            client_deadlines
         }
     }
 
@@ -116,6 +119,7 @@ impl Proxy {
                     let key = ClientRequestKey::new(client_id, *command_id);
                     self.pending.insert(key, ());
                     self.telemetry.record_client_request(client_id, *command_id);
+                    self.client_deadlines.entry(client_id).or_insert(2*self.clock.get_uncertainty() as u64);
                 }
             }
             let send_time = self.clock.get_time();

@@ -19,11 +19,11 @@ pub struct Dom {
     // moment in time where the last message from the early buffer has been released
     last_released_command: u64, 
 
-    // Release messages job
+    owd: Owd,
 
-    // Slow path if late
-
-    // Ack Proxy on log append 
+    // Used by the server to compute fast-path / slow-path invocation rates.
+    pub early_insertions: usize,
+    pub late_insertions: usize,
     
 
 }
