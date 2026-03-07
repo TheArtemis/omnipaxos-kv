@@ -10,7 +10,8 @@ use omnipaxos_kv::{clock, common::{kv::*, log_hash::LogHash, messages::*, utils:
 use omnipaxos_kv::dom::dom::Dom;
 use omnipaxos_kv::dom::config::DomConfig;
 use omnipaxos_storage::memory_storage::MemoryStorage;
-use std::{collections::HashSet, fs::File, io::Write, time::Duration};
+use serde::Serialize;
+use std::{collections::HashSet, fs::File, io::Write, time::{Duration, Instant}};
 
 use crate::commit_queue::{CommitQueue, CommitState};
 
@@ -18,6 +19,15 @@ type OmniPaxosInstance = OmniPaxos<Command, MemoryStorage<Command>>;
 const NETWORK_BATCH_SIZE: usize = 100;
 const LEADER_WAIT: Duration = Duration::from_secs(1);
 const ELECTION_TIMEOUT: Duration = Duration::from_secs(1);
+const STATS_FLUSH_INTERVAL: Duration = Duration::from_secs(5);
+const LATE_BUFFER_DRAIN_INTERVAL: Duration = Duration::from_millis(10);
+
+#[derive(Debug, Serialize)]
+struct ServerStats<'a> {
+    config: &'a OmniPaxosKVConfig,
+    early_buffer_rate_rps: f64,
+    late_buffer_rate_rps: f64,
+}
 
 pub struct OmniPaxosServer {
     id: NodeId,
@@ -35,6 +45,8 @@ pub struct OmniPaxosServer {
     commit_queue: CommitQueue,
 
     log_hash: LogHash,
+
+    stats_window_start: Instant,
 }
 
 impl OmniPaxosServer {
@@ -61,6 +73,7 @@ impl OmniPaxosServer {
             proxy_command_ids: HashSet::new(),
             log_hash: LogHash::new(),
             commit_queue: CommitQueue::new(),
+            stats_window_start: Instant::now(),
         }
     }
 
@@ -75,6 +88,11 @@ impl OmniPaxosServer {
             .await;
         // Main event loop with leader election
         let mut election_interval = tokio::time::interval(ELECTION_TIMEOUT);
+        let stats_start = tokio::time::Instant::now() + STATS_FLUSH_INTERVAL;
+        let mut stats_interval = tokio::time::interval_at(stats_start, STATS_FLUSH_INTERVAL);
+        stats_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut late_drain_interval = tokio::time::interval(LATE_BUFFER_DRAIN_INTERVAL);
+        late_drain_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             // Compute when the next deadline is
             let duration = self.dom.duration_until_next_deadline();
@@ -83,6 +101,13 @@ impl OmniPaxosServer {
                 _ = election_interval.tick() => {
                     self.omnipaxos.tick();
                     self.send_outgoing_msgs();
+                },
+                _ = late_drain_interval.tick() => {
+                    self.drain_late_buffer();
+                    self.send_outgoing_msgs();
+                },
+                _ = stats_interval.tick() => {
+                    self.flush_stats();
                 },
                 _ = self.network.cluster_messages.recv_many(&mut cluster_msg_buf, NETWORK_BATCH_SIZE) => {
                     self.handle_cluster_messages(&mut cluster_msg_buf).await;
@@ -103,6 +128,7 @@ impl OmniPaxosServer {
                     for msg in due {
                         match msg.message {
                             ClientMessage::Append(command_id, kv_command) => {
+                                debug!("{}: early path — processing message (client_id={}, command_id={})", self.id, msg.client_id, command_id);
                                 let command = Command {
                                     client_id: msg.client_id,
                                     coordinator_id: self.id,
@@ -110,21 +136,15 @@ impl OmniPaxosServer {
                                     kv_cmd: kv_command,
                                 };
 
-                                // Update the log hash with the command
-                                self.log_hash.add_entry(&command);
-
-
                                 // If we are the leader, update the database and respond with a fast reply
                                 if self.id == self.omnipaxos.get_current_leader().unwrap().0 {
                                     self.update_database_and_respond_fast(command);
-                                }
-                                else {
+                                } else {
                                     // If we are a follower we just respond with a fast reply
                                     // We append the command to the command buffer to be committed later
                                     // We need to ensure that we will add the commands in order
                                     self.respond_fast(command);
                                 }
-
                             }
                         }
                     }
@@ -202,24 +222,33 @@ impl OmniPaxosServer {
     }
 
     fn update_database_and_respond(&mut self, commands: Vec<Command>) {
-        // TODO: batching responses possible here (batch at handle_cluster_messages)
         for command in commands {
-            let read = self.database.handle_command(command.kv_cmd);
-            if command.coordinator_id == self.id {
+            let key = (command.client_id, command.id);
+            if self.proxy_command_ids.remove(&key) {
+                // Only the leader (coordinator) sends SlowPathReply; proxy commits on that single reply.
+                if command.coordinator_id == self.id {
+                    let read = self.database.handle_command(command.kv_cmd);
+                    let result = match read {
+                        Some(r) => ServerResult::Read(command.id, r),
+                        None => ServerResult::Write(command.id),
+                    };
+                    let reply = SlowPathReply {
+                        replica_id: self.id,
+                        client_id: command.client_id,
+                        request_id: command.id,
+                        result: Some(result),
+                    };
+                    debug!("{}: slow path — sending SlowPathReply (client_id={}, command_id={})", self.id, command.client_id, command.id);
+                    self.network.send_to_proxy(ServerMessage::SlowPathReply(reply));
+                }
+            } else if command.coordinator_id == self.id {
+                // Non-proxy mode: coordinator responds directly to the client.
+                let read = self.database.handle_command(command.kv_cmd);
                 let response = match read {
-                    Some(read_result) => ServerMessage::Read(command.id, read_result),
+                    Some(r) => ServerMessage::Read(command.id, r),
                     None => ServerMessage::Write(command.id),
                 };
-                if self
-                    .proxy_command_ids
-                    .remove(&(command.client_id, command.id))
-                {
-                    let proxy_msg =
-                        ServerMessage::ProxyResponse(command.client_id, Box::new(response));
-                    self.network.send_to_proxy(proxy_msg);
-                } else {
-                    self.network.send_to_client(command.client_id, response);
-                }
+                self.network.send_to_client(command.client_id, response);
             }
         }
     }
@@ -233,8 +262,8 @@ impl OmniPaxosServer {
             client_id: command.client_id,
             request_id: command.id,
             result: match read {
-                Some(read_result) => Some(FastReplyResult::Read(command.id, read_result)),
-                None => Some(FastReplyResult::Write(command.id)),
+                Some(read_result) => Some(ServerResult::Read(command.id, read_result)),
+                None => Some(ServerResult::Write(command.id)),
             },
             hash: self.log_hash.clone(),
         };
@@ -321,52 +350,43 @@ impl OmniPaxosServer {
         self.send_outgoing_msgs();
     }
 
-    // TODO: test this, still not sure if it goes through all of omnipaxos
     async fn handle_proxy_messages(&mut self, messages: &mut Vec<ProxyMessage>) {
         for proxy_msg in messages.drain(..) {
             match proxy_msg {
                 ProxyMessage::Append(dom_message) => {
-                    // Let the dom handle the message
-                    let message_passing_delay = self.dom.get_time() - dom_message.send_time;
-                    self.dom.add_element_to_owd(dom_message.client_id, message_passing_delay);
-                    // debug!("Elements inside owd data structure for client_id {} = {}", dom_message.client_id, self.dom.get_size(dom_message.client_id));
-                    self.dom.push_by_deadline(dom_message.clone());
-
-                    if let Some((leader_id, _)) = self.omnipaxos.get_current_leader() {
-                        if self.id == leader_id && self.dom.get_late_buffer_size() > 0 {
-                            // Extract one element from the Dom late buffer of the leader and start omnipaxos
-                            if let Some(dom_message) = self.dom.pop_from_late_buffer() {
-                                match dom_message.message {
-                                    ClientMessage::Append(command_id, kv_cmd) => {
-                                        // start omnipaxos and exit this function
-                                        self.append_to_log(dom_message.client_id, command_id, kv_cmd);
-                                        self.send_outgoing_msgs();
-                                        return;
-                                    }
-                                }
+                    if self.config.local.use_proxy {
+                        match &dom_message.message {
+                            ClientMessage::Append(command_id, _) => {
+                                self.proxy_command_ids
+                                    .insert((dom_message.client_id, *command_id));
                             }
                         }
                     }
-                    else {
-                        // remove elements from the late buffer of the followers
-                        if self.dom.get_late_buffer_size() > 0{
-                            let bin = self.dom.get_late_buffer_size();
-                        }
-                    }
-
-                    match dom_message.message {
-                        ClientMessage::Append(command_id, _) => {
-                            self.proxy_command_ids
-                                .insert((dom_message.client_id, command_id));
-                        }
-                    }
+                    let message_passing_delay = self.dom.get_time() - dom_message.send_time;
+                    self.dom.add_element_to_owd(dom_message.client_id, message_passing_delay);
+                    self.dom.push_by_deadline(dom_message);
                 }
                 ProxyMessage::Commit(commit_message) => {
                     self.handle_commit_message(commit_message);
                 }
             }
         }
+        self.drain_late_buffer();
         self.send_outgoing_msgs();
+    }
+
+    fn drain_late_buffer(&mut self) {
+        if let Some((leader_id, _)) = self.omnipaxos.get_current_leader() {
+            if self.id == leader_id {
+                while let Some(dom_message) = self.dom.pop_from_late_buffer() {
+                    match dom_message.message {
+                        ClientMessage::Append(command_id, kv_cmd) => {
+                            self.append_to_log(dom_message.client_id, command_id, kv_cmd);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     async fn handle_cluster_messages(
@@ -433,4 +453,27 @@ impl OmniPaxosServer {
         output_file.flush()?;
         Ok(())
     }
-}
+
+    fn flush_stats(&mut self) {
+        let elapsed = self.stats_window_start.elapsed().as_secs_f64();
+        self.stats_window_start = Instant::now();
+
+        let (early, late) = self.dom.take_buffer_counts();
+        let early_rps = if elapsed > 0.0 { early as f64 / elapsed } else { 0.0 };
+        let late_rps  = if elapsed > 0.0 { late  as f64 / elapsed } else { 0.0 };
+
+        let stats = ServerStats {
+            config: &self.config,
+            early_buffer_rate_rps: early_rps,
+            late_buffer_rate_rps: late_rps,
+        };
+        match serde_json::to_string_pretty(&stats) {
+            Ok(json) => {
+                if let Ok(mut f) = File::create(&self.config.local.output_filepath) {
+                    let _ = f.write_all(json.as_bytes());
+                    let _ = f.flush();
+                }
+            }
+            Err(e) => warn!("{}: Failed to serialize stats: {e}", self.id),
+        }
+    }}

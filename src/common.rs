@@ -44,8 +44,8 @@ pub mod messages {
         Write(CommandId),
         Read(CommandId, Option<String>),
         StartSignal(Timestamp),
-        ProxyResponse(ClientId, Box<ServerMessage>),
         FastReply(FastReply),
+        SlowPathReply(SlowPathReply),
     }
 
     impl ServerMessage {
@@ -54,8 +54,8 @@ pub mod messages {
                 ServerMessage::Write(id) => *id,
                 ServerMessage::Read(id, _) => *id,
                 ServerMessage::StartSignal(_) => unimplemented!(),
-                ServerMessage::ProxyResponse(_, msg) => msg.command_id(),
                 ServerMessage::FastReply(fr) => fr.request_id,
+                ServerMessage::SlowPathReply(sr) => sr.request_id,
             }
         }
     }
@@ -66,7 +66,7 @@ pub mod messages {
         pub replica_id: NodeId,
         pub client_id: ClientId,
         pub request_id: CommandId,
-        pub result: Option<FastReplyResult>, // None for the followers
+        pub result: Option<ServerResult>, // None for the followers
         pub hash: super::log_hash::LogHash,
     }
 
@@ -81,9 +81,17 @@ pub mod messages {
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
-    pub enum FastReplyResult {
+    pub enum ServerResult {
        Write(CommandId),
        Read(CommandId, Option<String>),
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct SlowPathReply {
+        pub replica_id: NodeId,
+        pub client_id: ClientId,
+        pub request_id: CommandId,
+        pub result: Option<ServerResult>,
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -159,6 +167,11 @@ pub mod kv {
     use omnipaxos::{macros::Entry, storage::Snapshot};
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
+
+    // Re-export telemetry types so existing `common::kv::*` imports keep working.
+    pub use crate::telemetry::{MAX_LATENCY_SAMPLES, NodeMetrics, SystemMetrics};
+    /// Backward-compatible alias for [`NodeMetrics`].
+    pub type Metrics = NodeMetrics;
 
     pub type CommandId = usize;
     pub type ClientId = u64;

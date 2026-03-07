@@ -39,9 +39,9 @@ impl Client {
             id: config.server_id,
             server_network,
             proxy_network,
-            client_data: ClientData::new(),
             active_server: config.server_id,
             config,
+            client_data: ClientData::new(),
             final_request_count: None,
             next_request_id: 0,
         }
@@ -183,9 +183,10 @@ impl Client {
     async fn send_request(&mut self, is_write: bool) {
         let key = self.next_request_id.to_string();
         let cmd = match is_write {
-            true => KVCommand::Put(key.clone(), key),
-            false => KVCommand::Get(key),
+            true => KVCommand::Put(key.clone(), key.clone()),
+            false => KVCommand::Get(key.clone()),
         };
+        
         let request = ClientMessage::Append(self.next_request_id, cmd);
         debug!("Sending {request:?}");
 
@@ -207,11 +208,11 @@ impl Client {
 
     fn run_finished(&self) -> bool {
         if let Some(count) = self.final_request_count {
-            if self.client_data.request_count() >= count {
+            if self.client_data.response_count() >= count {
                 return true;
             }
         }
-        return false;
+        false
     }
 
     // Wait until the scheduled start time to synchronize client starts.
@@ -234,6 +235,7 @@ impl Client {
         self.client_data.save_summary(self.config.clone())?;
         self.client_data
             .to_csv(self.config.output_filepath.clone())?;
+        
         Ok(())
     }
 }
