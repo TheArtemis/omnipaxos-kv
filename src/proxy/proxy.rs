@@ -15,6 +15,8 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 
 const NETWORK_BATCH_SIZE: usize = 100;
+// Used as "address" of the proxy
+pub const DEFAULT_PROXY_ADDRESS_KEY: u64 = 1_234_567;
 
 pub struct Proxy {
     config: ProxyConfig,
@@ -26,7 +28,7 @@ pub struct Proxy {
     f: usize, // Amount of replicas that can fail
     n_servers: usize,
     telemetry: TelemetryWriter,
-    client_deadlines: HashMap<ClientId, u64>,
+    client_deadlines: HashMap<NodeId, u64>,
 }
 
 impl Proxy {
@@ -64,7 +66,7 @@ impl Proxy {
             f,
             n_servers,
             telemetry,
-            client_deadlines
+            client_deadlines,
         }
     }
 
@@ -168,7 +170,10 @@ impl Proxy {
 
     fn get_deadline(&mut self, send_time: u64) -> u64 {
         let epsilon = self.clock.get_uncertainty() as u64;
-        send_time + 2 * epsilon
+        // debug!("Client deadlines values: {:?}", self.client_deadlines.values().collect::<Vec<_>>());
+        let adaptive_deadline = (self.client_deadlines.values().max().copied().unwrap_or(0) as f64 * 0.95) as u64;
+        // debug!("Adaptive deadline = {adaptive_deadline}");
+        adaptive_deadline + send_time + 2 * epsilon
     }
 
     async fn handle_fast_reply(&mut self, reply: FastReply) {

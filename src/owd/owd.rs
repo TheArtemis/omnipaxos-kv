@@ -1,11 +1,9 @@
 use std::collections::{HashMap, VecDeque};
 use std::collections::hash_map::Entry;
 
-use crate::common::kv::ClientId;
-
 pub struct Owd {
     // HashMap one for each client sending messages
-    client_data: HashMap<u64, VecDeque<u64>>,
+    proxy_data: HashMap<u64, VecDeque<u64>>,
     default_value: u64,
     beta: f64,
     window_size: u64,
@@ -14,7 +12,7 @@ pub struct Owd {
 impl Owd {
     pub fn new(default_value: u64, beta: f64, window_size: u64) -> Self {
         Self {
-            client_data: HashMap::new(),
+            proxy_data: HashMap::new(),
             default_value: default_value,
             beta: beta,
             window_size: window_size,
@@ -22,7 +20,7 @@ impl Owd {
     }
 
     pub fn get_std_dev(&self, key: u64) -> u64 {
-        match self.client_data.get(&key) {
+        match self.proxy_data.get(&key) {
             Some(values) if !values.is_empty() => {
                 let n = values.len() as f64;
                 let sum: f64 = values.iter().map(|&v| v as f64).sum();
@@ -33,7 +31,7 @@ impl Owd {
                 }).sum();
                 let variance = var_sum / n;
                 // standard deviation by the sqrt of the number of keys in the hashmap -> huygens
-                let num_keys = (self.client_data.len() as f64).max(1.0);
+                let num_keys = (self.proxy_data.len() as f64).max(1.0);
                 let std_dev = variance.sqrt() / num_keys.sqrt();
                 std_dev as u64
             }
@@ -41,8 +39,8 @@ impl Owd {
         }
     }
 
-    pub fn getSize(&mut self, client_id: ClientId)-> u64{
-        match self.client_data.get(&client_id) {
+    pub fn getSize(&mut self, proxy_address: u64)-> u64{
+        match self.proxy_data.get(&proxy_address) {
             Some(deque) => deque.len() as u64,
             None => 0,
         }
@@ -51,7 +49,7 @@ impl Owd {
 
     pub fn add_element(&mut self, key: u64, new_elem: u64) {
 
-        match self.client_data.entry(key) {
+        match self.proxy_data.entry(key) {
             Entry::Occupied(mut occ) => {
                 let deque = occ.get_mut();
                 if (deque.len() as u64) < self.window_size {
@@ -72,7 +70,7 @@ impl Owd {
 
     pub fn get_median(&self, key: u64) -> u64 {
         // Retrieve the deque of values for the given client key
-        match self.client_data.get(&key) {
+        match self.proxy_data.get(&key) {
             Some(values) if !values.is_empty() => {
                 let mut vals: Vec<u64> = values.iter().copied().collect();
                 vals.sort_unstable();

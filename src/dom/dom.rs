@@ -3,6 +3,7 @@ use crate::common::kv::{ClientId, CommandId};
 use crate::dom::config::DomConfig;
 use crate::dom::request::DomMessage;
 use crate::owd::owd::Owd;
+use log::debug;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::time::Duration;
@@ -42,7 +43,7 @@ impl Dom {
             last_released_command: 0,
             early_insertions: 0,
             late_insertions: 0,
-            owd: Owd::new(100, 0.01, 1000),
+            owd: Owd::new(1000, 0.01, 1000),
         }
     }
 
@@ -52,8 +53,8 @@ impl Dom {
     }
 
     // Add an element into owd
-    pub fn add_element_to_owd(&mut self, client_id: ClientId, new_elem: u64){
-        self.owd.add_element(client_id, new_elem)
+    pub fn add_element_to_owd(&mut self, proxy_address: u64, new_elem: u64){
+        self.owd.add_element(proxy_address, new_elem)
     }
 
     // get time
@@ -62,13 +63,14 @@ impl Dom {
     }
 
     // request deadline to owd
-    pub fn request_deadline_from_owd(&mut self, client_id: ClientId) -> u64{
-        self.owd.get_adaptive_deadline(client_id)
+    pub fn request_deadline_from_owd(&mut self, proxy_address: u64) -> u64{
+        let deadline = self.owd.get_adaptive_deadline(proxy_address);
+        deadline
     }
 
     // return size of element inside owd for client_id
-    pub fn get_size(&mut self, client_id: ClientId) -> u64{
-        return self.owd.getSize(client_id)
+    pub fn get_size(&mut self, proxy_address: u64) -> u64{
+        return self.owd.getSize(proxy_address)
     }
 
     // Implemented for testing
