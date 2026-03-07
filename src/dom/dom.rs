@@ -114,12 +114,14 @@ impl Dom {
             if msg.deadline > now {
                 break;
             }
-            // TODO: Should this be the last released command or the last released early buffer command?
-            self.last_released_command = msg.deadline;
             candidates.push(self.early_buffer.pop().unwrap().0);
         }
 
         let due = self.handle_overlapping_uncertainty(candidates);
+        // Last released command in the early buffer (due is ordered by deadline)
+        if let Some(last) = due.last() {
+            self.last_released_command = last.deadline;
+        }
         due
     }
 
