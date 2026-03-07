@@ -6,12 +6,6 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::time::Duration;
 
-/// True iff two deadlines are within each other's uncertainty window
-/// (intervals [d-u, d+u] overlap, i.e. |d1 - d2| <= 2*uncertainty).
-fn deadlines_overlap(overlap_threshold: u64, d1: u64, d2: u64) -> bool {
-    d1.saturating_sub(d2) <= overlap_threshold && d2.saturating_sub(d1) <= overlap_threshold
-}
-
 pub struct Dom {
     // Early buffer: min-heap by DomMessage::deadline
     early_buffer: BinaryHeap<Reverse<DomMessage>>,
@@ -132,24 +126,30 @@ impl Dom {
     /// Partitions messages by uncertainty overlap: if two messages have deadlines within
     /// each other's uncertainty window, we cannot order them, so they go to the late buffer.
     /// Otherwise they go to the early buffer.
+    /// Uses binary search over the already-sorted (by deadline) messages for O(n log n)
     pub fn handle_overlapping_uncertainty(&mut self, messages: Vec<DomMessage>) -> Vec<DomMessage> {
         if messages.is_empty() {
             return Vec::new();
         }
-        let mut due = Vec::new();
         let overlap_threshold = (self.clock.get_uncertainty() as u64).saturating_mul(2);
-        for (i, msg) in messages.iter().enumerate() {
-            let overlaps_other = messages.iter().enumerate().any(|(j, other)| {
-                i != j && deadlines_overlap(overlap_threshold, msg.deadline, other.deadline)
-            });
+        // Messages are already ordered by deadline (from early_buffer min-heap).
+        let deadlines: Vec<u64> = messages.iter().map(|m| m.deadline).collect();
+        let mut due = Vec::new();
+        for msg in messages.iter() {
+            let d = msg.deadline;
+            let left = deadlines.partition_point(|&x| x < d.saturating_sub(overlap_threshold));
+            let right = deadlines
+                .partition_point(|&x| x <= d + overlap_threshold)
+                .saturating_sub(1);
+            // More than one message in [d - threshold, d + threshold] => overlaps another
+            let overlaps_other = right > left;
             if overlaps_other {
                 self.push_to_late_buffer(msg.clone());
             } else {
                 due.push(msg.clone());
             }
         }
-
-        return due;
+        due
     }
 
 }
