@@ -14,7 +14,6 @@ use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 use crate::common::kv::{ClientId, NodeId};
 use crate::common::messages::{ClientMessage, ProxyMessage, RegistrationMessage, ServerMessage};
 use crate::common::utils::{frame_registration_connection, frame_servers_connection};
-use crate::dom::request::DomMessage;
 
 type FromProxyServerConnection = Framed<
     FramedRead<tokio::net::tcp::OwnedReadHalf, LengthDelimitedCodec>,

@@ -6,7 +6,7 @@ use omnipaxos::{
     util::{LogEntry, NodeId},
     OmniPaxos, OmniPaxosConfig,
 };
-use omnipaxos_kv::common::{kv::*, log_hash::LogHash, messages::*, utils::Timestamp};
+use omnipaxos_kv::{common::{kv::*, log_hash::LogHash, messages::*, utils::Timestamp}, proxy::proxy::DEFAULT_PROXY_ADDRESS_KEY};
 use omnipaxos_kv::dom::dom::Dom;
 use omnipaxos_kv::dom::config::DomConfig;
 use omnipaxos_storage::memory_storage::MemoryStorage;
@@ -21,6 +21,7 @@ const LEADER_WAIT: Duration = Duration::from_secs(1);
 const ELECTION_TIMEOUT: Duration = Duration::from_secs(1);
 const STATS_FLUSH_INTERVAL: Duration = Duration::from_secs(5);
 const LATE_BUFFER_DRAIN_INTERVAL: Duration = Duration::from_millis(10);
+
 
 #[derive(Debug, Serialize)]
 struct ServerStats<'a> {
@@ -232,11 +233,13 @@ impl OmniPaxosServer {
                         Some(r) => ServerResult::Read(command.id, r),
                         None => ServerResult::Write(command.id),
                     };
+                    let deadline_length = self.dom.request_deadline_from_owd(DEFAULT_PROXY_ADDRESS_KEY);
                     let reply = SlowPathReply {
                         replica_id: self.id,
                         client_id: command.client_id,
                         request_id: command.id,
                         result: Some(result),
+                        deadline_length,
                     };
                     debug!("{}: slow path — sending SlowPathReply (client_id={}, command_id={})", self.id, command.client_id, command.id);
                     self.network.send_to_proxy(ServerMessage::SlowPathReply(reply));
@@ -256,6 +259,7 @@ impl OmniPaxosServer {
     fn update_database_and_respond_fast(&mut self, command: Command) {
         let read = self.database.handle_command(command.kv_cmd);
         let ballot = self.omnipaxos.get_promise();
+        let deadline_length = self.dom.request_deadline_from_owd(DEFAULT_PROXY_ADDRESS_KEY);
         let fast_reply = FastReply {
             ballot,
             replica_id: self.id,
@@ -266,6 +270,7 @@ impl OmniPaxosServer {
                 None => Some(ServerResult::Write(command.id)),
             },
             hash: self.log_hash.clone(),
+            deadline_length,
         };
 
         let msg = ServerMessage::FastReply(fast_reply);
@@ -281,6 +286,7 @@ impl OmniPaxosServer {
     // Replicas just respond with a fast reply without updating the database
     fn respond_fast(&mut self, command: Command) {
         let ballot = self.omnipaxos.get_promise();
+        let deadline_length = self.dom.request_deadline_from_owd(DEFAULT_PROXY_ADDRESS_KEY);
         let fast_reply = FastReply {
             ballot,
             replica_id: self.id,
@@ -288,6 +294,7 @@ impl OmniPaxosServer {
             request_id: command.id,
             result: None,
             hash: self.log_hash.clone(),
+            deadline_length,
         };
 
         let msg = ServerMessage::FastReply(fast_reply);
@@ -362,6 +369,9 @@ impl OmniPaxosServer {
                             }
                         }
                     }
+                    let message_passing_delay = self.dom.get_time() - dom_message.send_time;
+                    self.dom
+                        .add_element_to_owd(DEFAULT_PROXY_ADDRESS_KEY, message_passing_delay);
                     self.dom.push_by_deadline(dom_message);
                 }
                 ProxyMessage::Commit(commit_message) => {

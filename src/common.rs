@@ -68,6 +68,8 @@ pub mod messages {
         pub request_id: CommandId,
         pub result: Option<ServerResult>, // None for the followers
         pub hash: super::log_hash::LogHash,
+        /// OWD deadline length (micros), piggybacked on reply.
+        pub deadline_length: u64,
     }
 
     impl FastReply {
@@ -92,6 +94,8 @@ pub mod messages {
         pub client_id: ClientId,
         pub request_id: CommandId,
         pub result: Option<ServerResult>,
+        /// OWD deadline length (micros), piggybacked on reply.
+        pub deadline_length: u64,
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]

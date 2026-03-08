@@ -15,6 +15,8 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 
 const NETWORK_BATCH_SIZE: usize = 100;
+// Used as "address" of the proxy
+pub const DEFAULT_PROXY_ADDRESS_KEY: u64 = 1_234_567;
 
 pub struct Proxy {
     config: ProxyConfig,
@@ -26,6 +28,7 @@ pub struct Proxy {
     f: usize, // Amount of replicas that can fail
     n_servers: usize,
     telemetry: TelemetryWriter,
+    client_deadlines: HashMap<NodeId, u64>,
 }
 
 impl Proxy {
@@ -48,6 +51,7 @@ impl Proxy {
         let f = (n_replicas - 1) / 2;
         let n_servers = config.targets().len();
         let telemetry = TelemetryWriter::new(config.metrics_filepath.clone());
+        let client_deadlines = HashMap::new();
         Self {
             config,
             network,
@@ -62,6 +66,7 @@ impl Proxy {
             f,
             n_servers,
             telemetry,
+            client_deadlines,
         }
     }
 
@@ -83,6 +88,8 @@ impl Proxy {
     pub async fn run(&mut self) {
         let mut client_msg_buf = Vec::with_capacity(NETWORK_BATCH_SIZE);
         let mut server_msg_buf = Vec::with_capacity(NETWORK_BATCH_SIZE);
+        let shutdown_signal = wait_for_shutdown_signal();
+        tokio::pin!(shutdown_signal);
         let start = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
         let mut metrics_flush_interval = tokio::time::interval_at(start, std::time::Duration::from_secs(1));
         metrics_flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -97,8 +104,9 @@ impl Proxy {
                 _ = metrics_flush_interval.tick() => {
                     self.flush_metrics();
                 },
-                _ = tokio::signal::ctrl_c() => {
+                _ = &mut shutdown_signal => {
                     self.flush_metrics();
+                    self.network.shutdown();
                     return;
                 },
             }
@@ -116,6 +124,7 @@ impl Proxy {
                     let key = ClientRequestKey::new(client_id, *command_id);
                     self.pending.insert(key, ());
                     self.telemetry.record_client_request(client_id, *command_id);
+                    self.client_deadlines.entry(client_id).or_insert(2*self.clock.get_uncertainty() as u64);
                 }
             }
             let send_time = self.clock.get_time();
@@ -153,10 +162,21 @@ impl Proxy {
 
     fn get_deadline(&mut self, send_time: u64) -> u64 {
         let epsilon = self.clock.get_uncertainty() as u64;
-        send_time + 2 * epsilon
+        // debug!("Client deadlines values: {:?}", self.client_deadlines.values().collect::<Vec<_>>());
+        let adaptive_deadline = (self.client_deadlines.values().max().copied().unwrap_or(0) as f64 * 0.95) as u64;
+        // debug!("Adaptive deadline = {adaptive_deadline}");
+        adaptive_deadline + send_time + 2 * epsilon
     }
 
     async fn handle_fast_reply(&mut self, reply: FastReply) {
+        let d = reply.deadline_length;
+        let old = self.client_deadlines.insert(reply.replica_id, d);
+        if old != Some(d) {
+            debug!(
+                "changing deadline for node {} from {:?} to {}",
+                reply.replica_id, old, d
+            );
+        }
         let key = ClientRequestKey::new(reply.client_id, reply.request_id);
         let state = self
             .reply_sets
@@ -197,6 +217,14 @@ impl Proxy {
     }
     
     fn handle_slow_path_reply(&mut self, sr: SlowPathReply) {
+        let d = sr.deadline_length;
+        let old = self.client_deadlines.insert(sr.replica_id, d);
+        if old != Some(d) {
+            debug!(
+                "changing deadline for node {} from {:?} to {}",
+                sr.replica_id, old, d
+            );
+        }
         let key = ClientRequestKey::new(sr.client_id, sr.request_id);
         let state = self
             .slow_reply_sets
@@ -308,5 +336,23 @@ impl Proxy {
                 .send_to_server(server.id, ProxyMessage::Commit(commit_message.clone()))
                 .await;
         }
+    }
+}
+
+async fn wait_for_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut terminate = signal(SignalKind::terminate())
+            .expect("failed to install SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {},
+            _ = terminate.recv() => {},
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
     }
 }
