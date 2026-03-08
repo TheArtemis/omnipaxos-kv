@@ -93,8 +93,6 @@ impl Proxy {
         let start = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
         let mut metrics_flush_interval = tokio::time::interval_at(start, std::time::Duration::from_secs(1));
         metrics_flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut deadline_request_interval = tokio::time::interval(std::time::Duration::from_secs(3));
-        deadline_request_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 _ = self.network.client_messages.recv_many(&mut client_msg_buf, NETWORK_BATCH_SIZE) => {
@@ -105,9 +103,6 @@ impl Proxy {
                 },
                 _ = metrics_flush_interval.tick() => {
                     self.flush_metrics();
-                },
-                _ = deadline_request_interval.tick() => {
-                    self.send_deadline_length_request().await;
                 },
                 _ = &mut shutdown_signal => {
                     self.flush_metrics();
@@ -158,9 +153,6 @@ impl Proxy {
                 ServerMessage::FastReply(fast_reply) => {
                     self.handle_fast_reply(fast_reply).await;
                 }
-                ServerMessage::DeadlineLengthRequestReply(node_id, deadline_length) => {
-                    self.handle_deadline_length_request_reply(node_id, deadline_length);
-                }
                 other => {
                     warn!("Unexpected server message on proxy connection: {other:?}");
                 }
@@ -177,6 +169,14 @@ impl Proxy {
     }
 
     async fn handle_fast_reply(&mut self, reply: FastReply) {
+        let d = reply.deadline_length;
+        let old = self.client_deadlines.insert(reply.replica_id, d);
+        if old != Some(d) {
+            debug!(
+                "changing deadline for node {} from {:?} to {}",
+                reply.replica_id, old, d
+            );
+        }
         let key = ClientRequestKey::new(reply.client_id, reply.request_id);
         let state = self
             .reply_sets
@@ -217,6 +217,14 @@ impl Proxy {
     }
     
     fn handle_slow_path_reply(&mut self, sr: SlowPathReply) {
+        let d = sr.deadline_length;
+        let old = self.client_deadlines.insert(sr.replica_id, d);
+        if old != Some(d) {
+            debug!(
+                "changing deadline for node {} from {:?} to {}",
+                sr.replica_id, old, d
+            );
+        }
         let key = ClientRequestKey::new(sr.client_id, sr.request_id);
         let state = self
             .slow_reply_sets
@@ -328,24 +336,6 @@ impl Proxy {
                 .send_to_server(server.id, ProxyMessage::Commit(commit_message.clone()))
                 .await;
         }
-    }
-
-    async fn send_deadline_length_request(&mut self) {
-        let request = ProxyMessage::DeadlineLengthRequest(
-            DEFAULT_PROXY_ADDRESS_KEY,
-            "give me deadline".to_string(),
-        );
-        for server in self.config.targets() {
-            self.network
-                .send_to_server(server.id, request.clone())
-                .await;
-        }
-    }
-
-    fn handle_deadline_length_request_reply(&mut self, node_id: NodeId, deadline_length: u64) {
-        debug!("Received deadline update from node {node_id}: {deadline_length}");
-        // HashMap::insert performs upsert semantics: existing value is replaced.
-        self.client_deadlines.insert(node_id, deadline_length);
     }
 }
 
