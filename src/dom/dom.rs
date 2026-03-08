@@ -137,22 +137,49 @@ impl Dom {
     /// Caller is responsible for appending to the log and updating proxy_command_ids.
     pub fn handle_deadline(&mut self) -> Vec<DomMessage> {
         let now = self.clock.get_time();
-        let mut due = Vec::new();
+        let mut candidates = Vec::new();
         while let Some(Reverse(msg)) = self.early_buffer.peek() {
             if msg.deadline > now {
                 break;
             }
-            self.last_released_command = msg.deadline;
-            due.push(self.early_buffer.pop().unwrap().0);
+            candidates.push(self.early_buffer.pop().unwrap().0);
+        }
+
+        let due = self.handle_overlapping_uncertainty(candidates);
+        // Last released command in the early buffer (due is ordered by deadline)
+        if let Some(last) = due.last() {
+            self.last_released_command = last.deadline;
         }
         due
     }
 
-    // TODO: Server handles the late buffer:
-
-    // a) If I'm a leader I edit the deadline so that i can still do the fast path
-
-    // b) If I'm a follower I process it with the slow path???
-    // But since we are doing omnipaxos maybe we don't do that???
+    /// Partitions messages by uncertainty overlap: if two messages have deadlines within
+    /// each other's uncertainty window, we cannot order them, so they go to the late buffer.
+    /// Otherwise they go to the early buffer.
+    /// Uses binary search over the already-sorted (by deadline) messages for O(n log n)
+    pub fn handle_overlapping_uncertainty(&mut self, messages: Vec<DomMessage>) -> Vec<DomMessage> {
+        if messages.is_empty() {
+            return Vec::new();
+        }
+        let overlap_threshold = (self.clock.get_uncertainty() as u64).saturating_mul(2);
+        // Messages are already ordered by deadline (from early_buffer min-heap).
+        let deadlines: Vec<u64> = messages.iter().map(|m| m.deadline).collect();
+        let mut due = Vec::new();
+        for msg in messages.iter() {
+            let d = msg.deadline;
+            let left = deadlines.partition_point(|&x| x < d.saturating_sub(overlap_threshold));
+            let right = deadlines
+                .partition_point(|&x| x <= d + overlap_threshold)
+                .saturating_sub(1);
+            // More than one message in [d - threshold, d + threshold] => overlaps another
+            let overlaps_other = right > left;
+            if overlaps_other {
+                self.push_to_late_buffer(msg.clone());
+            } else {
+                due.push(msg.clone());
+            }
+        }
+        due
+    }
 
 }
