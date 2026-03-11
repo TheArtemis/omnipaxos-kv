@@ -233,7 +233,7 @@ impl OmniPaxosServer {
                         Some(r) => ServerResult::Read(command.id, r),
                         None => ServerResult::Write(command.id),
                     };
-                    let deadline_length = self.dom.request_deadline_from_owd(DEFAULT_PROXY_ADDRESS_KEY);
+                    let deadline_length = self.compute_deadline_length();
                     let reply = SlowPathReply {
                         replica_id: self.id,
                         client_id: command.client_id,
@@ -259,7 +259,7 @@ impl OmniPaxosServer {
     fn update_database_and_respond_fast(&mut self, command: Command) {
         let read = self.database.handle_command(command.kv_cmd);
         let ballot = self.omnipaxos.get_promise();
-        let deadline_length = self.dom.request_deadline_from_owd(DEFAULT_PROXY_ADDRESS_KEY);
+        let deadline_length = self.compute_deadline_length();
         let fast_reply = FastReply {
             ballot,
             replica_id: self.id,
@@ -286,7 +286,7 @@ impl OmniPaxosServer {
     // Replicas just respond with a fast reply without updating the database
     fn respond_fast(&mut self, command: Command) {
         let ballot = self.omnipaxos.get_promise();
-        let deadline_length = self.dom.request_deadline_from_owd(DEFAULT_PROXY_ADDRESS_KEY);
+        let deadline_length = self.compute_deadline_length();
         let fast_reply = FastReply {
             ballot,
             replica_id: self.id,
@@ -306,6 +306,14 @@ impl OmniPaxosServer {
     fn update_database(&mut self, command: Command) {
         if self.proxy_command_ids.remove(&(command.client_id, command.id)) {
             self.database.handle_command(command.kv_cmd);
+        }
+    }
+
+    fn compute_deadline_length(&mut self) -> u64 {
+        if self.config.local.adaptive_deadline {
+            self.dom.request_deadline_from_owd(DEFAULT_PROXY_ADDRESS_KEY)
+        } else {
+            self.dom.get_default_deadline()
         }
     }
 

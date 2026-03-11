@@ -39,6 +39,11 @@ impl Owd {
         }
     }
 
+    // Return default value when there is no adaptive deadline
+    pub fn get_default_deadline(&mut self) -> u64{
+        self.default_value
+    }
+
     pub fn getSize(&mut self, proxy_address: u64)-> u64{
         match self.proxy_data.get(&proxy_address) {
             Some(deque) => deque.len() as u64,
