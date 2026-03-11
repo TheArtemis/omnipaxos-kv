@@ -32,6 +32,7 @@ pub struct LocalConfig {
     #[serde(default)]
     pub use_proxy: bool,
     pub adaptive_deadline: bool,
+    pub default_deadline: u64,
     pub output_filepath: String,
 }
 

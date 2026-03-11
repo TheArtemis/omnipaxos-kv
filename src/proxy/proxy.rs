@@ -176,7 +176,11 @@ impl Proxy {
     }
 
     fn get_adaptive_deadline(&self) -> u64 {
-        self.max_client_deadline
+        if self.config.adaptive_deadline && self.max_client_deadline > 0 {
+            self.max_client_deadline
+        } else {
+            self.config.default_deadline
+        }
     }
 
     fn get_deadline(&self, send_time: u64, adaptive_deadline: u64) -> u64 {
@@ -252,7 +256,11 @@ impl Proxy {
     async fn handle_fast_reply(&mut self, reply: FastReply) {
         let d = reply.deadline_length;
         self.telemetry.record_owd_deadline(reply.replica_id, d);
-        let old = self.update_client_deadline(reply.replica_id, d);
+        let old = if self.config.adaptive_deadline {
+            self.update_client_deadline(reply.replica_id, d)
+        } else {
+            None
+        };
         if old != Some(d) {
             debug!(
                 "changing deadline for node {} from {:?} to {}",
@@ -307,7 +315,11 @@ impl Proxy {
     fn handle_slow_path_reply(&mut self, sr: SlowPathReply) {
         let d = sr.deadline_length;
         self.telemetry.record_owd_deadline(sr.replica_id, d);
-        let old = self.update_client_deadline(sr.replica_id, d);
+        let old = if self.config.adaptive_deadline {
+            self.update_client_deadline(sr.replica_id, d)
+        } else {
+            None
+        };
         if old != Some(d) {
             debug!(
                 "changing deadline for node {} from {:?} to {}",

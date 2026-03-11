@@ -314,7 +314,7 @@ impl OmniPaxosServer {
         if self.config.local.adaptive_deadline {
             self.dom.request_deadline_from_owd(DEFAULT_NODE_ID)
         } else {
-            self.dom.get_default_deadline()
+            self.config.local.default_deadline
         }
     }
 
