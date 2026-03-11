@@ -382,6 +382,36 @@ impl OmniPaxosServer {
                         .add_element_to_owd(DEFAULT_NODE_ID, message_passing_delay);
                     self.dom.push_by_deadline(dom_message);
                 }
+                ProxyMessage::AbortFastPath(dom_message) => {
+                    if let Some((leader_id, _)) = self.omnipaxos.get_current_leader() {
+                        if self.id == leader_id {
+                            if self.config.local.use_proxy {
+                                if let ClientMessage::Append(command_id, _) = &dom_message.message {
+                                    self.proxy_command_ids
+                                        .insert((dom_message.client_id, *command_id));
+                                }
+                            }
+                            debug!(
+                                "{}: fast path aborted — adding to slow-path buffer (client_id={}, command_id={})",
+                                self.id,
+                                dom_message.client_id,
+                                dom_message.message.command_id()
+                            );
+                            self.dom.push_to_late_buffer(dom_message);
+                        } else {
+                            if let ClientMessage::Append(command_id, _) = &dom_message.message {
+                                self.commit_queue
+                                    .remove_by_key(dom_message.client_id, *command_id);
+                            }
+                            debug!(
+                                "{}: fast path abort received for (client_id={}, command_id={}) but not leader; ignoring",
+                                self.id,
+                                dom_message.client_id,
+                                dom_message.message.command_id()
+                            );
+                        }
+                    }
+                }
                 ProxyMessage::Commit(commit_message) => {
                     self.handle_commit_message(commit_message);
                 }

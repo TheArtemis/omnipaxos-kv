@@ -13,7 +13,7 @@ pub(crate) struct SlowReplySetState {
     pub(crate) result: Option<ServerResult>,
 }
 
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct ClientRequestKey {
     pub(crate) client_id: ClientId,
     pub(crate) command_id: CommandId,
@@ -27,4 +27,3 @@ impl ClientRequestKey {
         }
     }
 }
-

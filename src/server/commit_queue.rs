@@ -60,5 +60,14 @@ impl CommitQueue {
             .find(|(c, _)| c.client_id == client_id && c.id == command_id)
             .map(|(c, _)| c.clone())
     }
-}
 
+    pub fn remove_by_key(&mut self, client_id: ClientId, command_id: CommandId) {
+        if let Some(pos) = self
+            .commands
+            .iter()
+            .position(|(c, _)| c.client_id == client_id && c.id == command_id)
+        {
+            self.commands.remove(pos);
+        }
+    }
+}
