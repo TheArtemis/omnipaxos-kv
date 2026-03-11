@@ -8,8 +8,8 @@ output_filepath = "./logs/client-1.csv"
 
 # Defining TOML vector of (duration_sec, requests_per_sec, read_ratio) which determines the behavior of the client requests
 [[requests]]
-duration_sec = 3
-requests_per_sec = 10
+duration_sec = 20
+requests_per_sec = 500
 read_ratio = 0.25
 
 
