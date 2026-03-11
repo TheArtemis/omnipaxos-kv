@@ -39,7 +39,7 @@ impl Owd {
         }
     }
 
-    pub fn getSize(&mut self, proxy_address: u64)-> u64{
+    pub fn get_size(&mut self, proxy_address: u64)-> u64{
         match self.proxy_data.get(&proxy_address) {
             Some(deque) => deque.len() as u64,
             None => 0,

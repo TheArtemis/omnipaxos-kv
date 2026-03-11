@@ -70,7 +70,7 @@ impl Dom {
 
     // return size of element inside owd for client_id
     pub fn get_size(&mut self, proxy_address: u64) -> u64{
-        return self.owd.getSize(proxy_address)
+        return self.owd.get_size(proxy_address)
     }
 
     // Implemented for testing
