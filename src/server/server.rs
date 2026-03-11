@@ -65,6 +65,7 @@ impl OmniPaxosServer {
             network,
             dom: Dom::new(DomConfig {
                 clock: config.clock.clone(),
+                owd: config.owd.clone(),
             }),
             omnipaxos,
             current_decided_idx: 0,

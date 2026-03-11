@@ -43,7 +43,11 @@ impl Dom {
             last_released_command: 0,
             early_insertions: 0,
             late_insertions: 0,
-            owd: Owd::new(1000, 0.01, 1000),
+            owd: Owd::new(
+                config.owd.default_value,
+                config.owd.percentile,
+                config.owd.window_size,
+            ),
         }
     }
 
@@ -69,7 +73,8 @@ impl Dom {
     // request deadline to owd
     pub fn request_deadline_from_owd(&mut self, node_id: u64) -> u64{
         let deadline = self.owd.get_adaptive_deadline(node_id);
-        deadline
+        let uncertainty = self.clock.get_uncertainty() as u64;
+        deadline + 2 * uncertainty
     }
 
     // return size of element inside owd for client_id

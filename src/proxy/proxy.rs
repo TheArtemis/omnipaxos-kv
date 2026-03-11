@@ -30,6 +30,7 @@ pub struct Proxy {
     n_servers: usize,
     telemetry: TelemetryWriter,
     client_deadlines: HashMap<NodeId, u64>,
+    max_client_deadline: u64,
 }
 
 impl Proxy {
@@ -71,6 +72,7 @@ impl Proxy {
             n_servers,
             telemetry,
             client_deadlines,
+            max_client_deadline: 0,
         }
     }
 
@@ -133,7 +135,6 @@ impl Proxy {
                     let key = ClientRequestKey::new(client_id, *command_id);
                     self.pending.insert(key, ());
                     self.telemetry.record_client_request(client_id, *command_id);
-                    self.client_deadlines.entry(client_id).or_insert(2*self.clock.get_uncertainty() as u64);
                     let send_time = self.clock.get_time();
                     let adaptive_deadline = self.get_adaptive_deadline();
                     let deadline = self.get_deadline(send_time, adaptive_deadline);
@@ -175,18 +176,16 @@ impl Proxy {
     }
 
     fn get_adaptive_deadline(&self) -> u64 {
-        (self.client_deadlines.values().max().copied().unwrap_or(0) as f64 * 0.95) as u64
+        self.max_client_deadline
     }
 
     fn get_deadline(&self, send_time: u64, adaptive_deadline: u64) -> u64 {
-        let epsilon = self.clock.get_uncertainty() as u64;
-        adaptive_deadline + send_time + 2 * epsilon
+        adaptive_deadline + send_time
     }
 
     fn get_fast_path_timeout(&self, deadline: u64, adaptive_deadline: u64) -> u64 {
-        let epsilon = self.clock.get_uncertainty() as u64;
         let rtt = adaptive_deadline.saturating_mul(2);
-        deadline + rtt + epsilon
+        deadline + rtt
     }
 
     fn should_abort_fast_path(&mut self, key: ClientRequestKey) -> bool {
@@ -252,7 +251,8 @@ impl Proxy {
 
     async fn handle_fast_reply(&mut self, reply: FastReply) {
         let d = reply.deadline_length;
-        let old = self.client_deadlines.insert(reply.replica_id, d);
+        self.telemetry.record_owd_deadline(reply.replica_id, d);
+        let old = self.update_client_deadline(reply.replica_id, d);
         if old != Some(d) {
             debug!(
                 "changing deadline for node {} from {:?} to {}",
@@ -285,17 +285,20 @@ impl Proxy {
             state.replies.clear();
         }
         // 3. Same ballot: insert
-        state.replies.push(reply.clone());
+        let client_id = reply.client_id;
+        let request_id = reply.request_id;
+        let replica_id = reply.replica_id;
+        state.replies.push(reply);
 
-        self.telemetry.record_fast_reply(reply.replica_id, reply.client_id, reply.request_id);
+        self.telemetry.record_fast_reply(replica_id, client_id, request_id);
 
         if let Some(leader_reply) = self.can_commit(key) {
-            self.telemetry.record_fast_path_commit(reply.client_id, reply.request_id);
+            self.telemetry.record_fast_path_commit(client_id, request_id);
             self.reply_to_client(leader_reply, key);
             // Will send the commit message to all servers
             self.send_commit_message(CommitMessage {
-                client_id: reply.client_id,
-                command_id: reply.request_id,
+                client_id,
+                command_id: request_id,
             })
             .await;
         }
@@ -303,7 +306,8 @@ impl Proxy {
     
     fn handle_slow_path_reply(&mut self, sr: SlowPathReply) {
         let d = sr.deadline_length;
-        let old = self.client_deadlines.insert(sr.replica_id, d);
+        self.telemetry.record_owd_deadline(sr.replica_id, d);
+        let old = self.update_client_deadline(sr.replica_id, d);
         if old != Some(d) {
             debug!(
                 "changing deadline for node {} from {:?} to {}",
@@ -374,9 +378,8 @@ impl Proxy {
 
     fn get_leader_reply(&self, key: ClientRequestKey) -> Option<FastReply> {
         // Leader reply is the one with the result that is not None
-        let replies = self.reply_sets.get(&key).unwrap().replies.clone();
-        let leader_reply = replies.iter().find(|r| r.result.is_some());
-        leader_reply.cloned()
+        let replies = &self.reply_sets.get(&key)?.replies;
+        replies.iter().find(|r| r.result.is_some()).cloned()
     }
 
     fn can_commit(
@@ -427,6 +430,16 @@ impl Proxy {
                 .send_to_server(server.id, ProxyMessage::Commit(commit_message.clone()))
                 .await;
         }
+    }
+
+    fn update_client_deadline(&mut self, replica_id: NodeId, d: u64) -> Option<u64> {
+        let old = self.client_deadlines.insert(replica_id, d);
+        if d > self.max_client_deadline {
+            self.max_client_deadline = d;
+        } else if old == Some(self.max_client_deadline) && d < self.max_client_deadline {
+            self.max_client_deadline = self.client_deadlines.values().copied().max().unwrap_or(0);
+        }
+        old
     }
 }
 

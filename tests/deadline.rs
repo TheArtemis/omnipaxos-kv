@@ -4,6 +4,7 @@ use omnipaxos_kv::common::messages::ClientMessage;
 use omnipaxos_kv::dom::config::DomConfig;
 use omnipaxos_kv::dom::dom::Dom;
 use omnipaxos_kv::dom::request::DomMessage;
+use omnipaxos_kv::owd::config::OwdConfig;
 
 fn dom_with_uncertainty(uncertainty: f64) -> Dom {
     let clock = ClockConfig {
@@ -11,7 +12,14 @@ fn dom_with_uncertainty(uncertainty: f64) -> Dom {
         uncertainty_bound: uncertainty,
         sync_freq: 1000.0,
     };
-    let config = DomConfig { clock };
+    let config = DomConfig {
+        clock,
+        owd: OwdConfig {
+            default_value: 1000,
+            percentile: 0.95,
+            window_size: 1000,
+        },
+    };
     Dom::new(config)
 }
 
