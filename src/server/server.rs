@@ -6,7 +6,7 @@ use omnipaxos::{
     util::{LogEntry, NodeId},
     OmniPaxos, OmniPaxosConfig,
 };
-use omnipaxos_kv::{common::{kv::*, log_hash::LogHash, messages::*, utils::Timestamp}, proxy::proxy::DEFAULT_PROXY_ADDRESS_KEY};
+use omnipaxos_kv::{common::{kv::*, log_hash::LogHash, messages::*, utils::Timestamp, DEFAULT_NODE_ID}};
 use omnipaxos_kv::dom::dom::Dom;
 use omnipaxos_kv::dom::config::DomConfig;
 use omnipaxos_storage::memory_storage::MemoryStorage;
@@ -311,7 +311,7 @@ impl OmniPaxosServer {
 
     fn compute_deadline_length(&mut self) -> u64 {
         if self.config.local.adaptive_deadline {
-            self.dom.request_deadline_from_owd(DEFAULT_PROXY_ADDRESS_KEY)
+            self.dom.request_deadline_from_owd(DEFAULT_NODE_ID)
         } else {
             self.dom.get_default_deadline()
         }
@@ -379,7 +379,7 @@ impl OmniPaxosServer {
                     }
                     let message_passing_delay = self.dom.get_time() - dom_message.send_time;
                     self.dom
-                        .add_element_to_owd(DEFAULT_PROXY_ADDRESS_KEY, message_passing_delay);
+                        .add_element_to_owd(DEFAULT_NODE_ID, message_passing_delay);
                     self.dom.push_by_deadline(dom_message);
                 }
                 ProxyMessage::Commit(commit_message) => {

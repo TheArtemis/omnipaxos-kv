@@ -1,0 +1,86 @@
+# NOTE: Dont use `docker compose up --build` because s2-s5 will pull a stale image that
+# won't reflect any changes s1 makes to the image in the build step. Instead call
+# `docker compose build` then `docker compose up`.
+x-common-variables: &common-server-variables
+  RUST_LOG: "${RUST_LOG:-debug}"
+  SERVER_CONFIG_FILE: "/app/server-config.toml"
+  CLUSTER_CONFIG_FILE: "/app/cluster-config.toml"
+  OMNIPAXOS_NODE_ADDRS: "s1:8000,s2:8000,s3:8000" # Overwrite node_addrs in cluster config TOML
+  OMNIPAXOS_LISTEN_ADDRESS: "0.0.0.0"             # Overwrite listen_address in server config TOMLs
+  OMNIPAXOS_LISTEN_PORT: 8000                     # Overwrite listen_port in server config TOMLs
+
+services:
+  s1:
+    image: omnipaxos-server
+    build:
+      context: ../..
+      dockerfile: server.dockerfile
+    environment:
+      <<: *common-server-variables
+    volumes:
+      - ./server-1-config.toml:/app/server-config.toml
+      - ./cluster-config.toml:/app/cluster-config.toml
+      - ./logs/:/app/logs/
+  s2:
+    image: omnipaxos-server
+    environment:
+      <<: *common-server-variables
+    volumes:
+      - ./server-2-config.toml:/app/server-config.toml
+      - ./cluster-config.toml:/app/cluster-config.toml
+      - ./logs/:/app/logs/
+  s3:
+    image: omnipaxos-server
+    environment:
+      <<: *common-server-variables
+    volumes:
+      - ./server-3-config.toml:/app/server-config.toml
+      - ./cluster-config.toml:/app/cluster-config.toml
+      - ./logs/:/app/logs/
+  proxy:
+    image: omnipaxos-proxy
+    build:
+      context: ../..
+      dockerfile: proxy.dockerfile
+    environment:
+      RUST_LOG: "${RUST_LOG:-debug}"
+      PROXY_CONFIG_FILE: "/app/proxy-config.toml"
+      OMNIPAXOS_NODE_ADDRS: "s1:8000,s2:8000,s3:8000"
+      OMNIPAXOS_PROXY_LISTEN_ADDRESS: "0.0.0.0"
+      OMNIPAXOS_PROXY_LISTEN_PORT: 9000
+    volumes:
+      - ./proxy-config.toml:/app/proxy-config.toml
+      - ./logs/:/app/logs/
+  c1:
+    image: omnipaxos-client
+    build:
+      context: ../..
+      dockerfile: client.dockerfile
+    depends_on:
+      - proxy
+    environment:
+      RUST_LOG: "${RUST_LOG:-debug}"
+      CONFIG_FILE: "/app/client-config.toml"
+      CLUSTER_CONFIG_FILE: "/app/cluster-config.toml"
+      OMNIPAXOS_NODE_ADDRS: "s1:8000,s2:8000,s3:8000"
+      OMNIPAXOS_PROXY_ADDRESS: "proxy:9000"
+      OMNIPAXOS_SERVER_ADDRESS: "s1:8000" # Overwrite server_address in client config TOML
+    volumes:
+      - ./client-1-config.toml:/app/client-config.toml
+      - ./cluster-config.toml:/app/cluster-config.toml
+      - ./logs/:/app/logs/
+  c2:
+    image: omnipaxos-client
+    depends_on:
+      - proxy
+    environment:
+      RUST_LOG: "${RUST_LOG:-debug}"
+      CONFIG_FILE: "/app/client-config.toml"
+      CLUSTER_CONFIG_FILE: "/app/cluster-config.toml"
+      OMNIPAXOS_NODE_ADDRS: "s1:8000,s2:8000,s3:8000"
+      OMNIPAXOS_PROXY_ADDRESS: "proxy:9000"
+      OMNIPAXOS_SERVER_ADDRESS: "s2:8000" # Overwrite server_address in client config TOML
+    volumes:
+      - ./client-2-config.toml:/app/client-config.toml
+      - ./cluster-config.toml:/app/cluster-config.toml
+      - ./logs/:/app/logs/

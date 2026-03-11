@@ -15,8 +15,6 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 
 const NETWORK_BATCH_SIZE: usize = 100;
-// Used as "address" of the proxy
-pub const DEFAULT_PROXY_ADDRESS_KEY: u64 = 1_234_567;
 
 pub struct Proxy {
     config: ProxyConfig,
@@ -133,7 +131,7 @@ impl Proxy {
 
             // Multicast to all servers as ProxyMessage::Append
             for server in self.config.targets() {
-                info!("Forward client {} -> server {}", client_id, server.id);
+                debug!("Forward client {} -> server {}", client_id, server.id);
                 self.network
                     .send_to_server(server.id, ProxyMessage::Append(dom_message.clone()))
                     .await;
@@ -308,7 +306,7 @@ impl Proxy {
             // logging "committing" when we have e.g. two follower replies with same hash
             // and the leader reply arrives later with a different hash).
             if let Some(leader) = self.get_leader_reply(key) {
-                info!("Super quorum for {:?}, committing", key);
+                debug!("Super quorum for {:?}, committing", key);
                 // Log the log
                 // debug!("Log for {:?}: {:?}", key, self.reply_sets.get(&key).unwrap().replies);
                 return Some(leader);

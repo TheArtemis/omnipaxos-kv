@@ -111,6 +111,9 @@ pub mod messages {
     }
 }
 
+/// Default node id used when tracking OWD for the single proxy node.
+pub const DEFAULT_NODE_ID: u64 = 0;
+
 /// Running set-hash over log entries: SHA-1 per entry, XOR'd into a single value.
 /// Equality of set hashes across replicas implies identical log contents (order fixed by deadlines).
 pub mod log_hash {
