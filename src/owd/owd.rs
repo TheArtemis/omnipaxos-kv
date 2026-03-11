@@ -21,6 +21,18 @@ impl Owd {
         }
     }
 
+    // Return default value when there is no adaptive deadline
+    pub fn get_default_deadline(&self) -> u64 {
+        self.default_value
+    }
+
+    pub fn get_size(&mut self, node_id: u64) -> u64 {
+        match self.node_data.get(&node_id) {
+            Some(deque) => deque.len() as u64,
+            None => 0,
+        }
+    }
+
     pub fn get_std_dev(&self, key: u64) -> u64 {
         match self.node_data.get(&key) {
             Some(values) if !values.is_empty() => {
@@ -40,14 +52,6 @@ impl Owd {
             _ => 0,
         }
     }
-
-    pub fn get_size(&mut self, node_id: u64)-> u64{
-        match self.node_data.get(&node_id) {
-            Some(deque) => deque.len() as u64,
-            None => 0,
-        }
-    }
-
 
     pub fn add_element(&mut self, key: u64, new_elem: u64) {
 

@@ -57,6 +57,10 @@ impl Dom {
         self.owd.add_element(node_id, new_elem)
     }
 
+    pub fn get_default_deadline(&mut self) -> u64 {
+        return self.owd.get_default_deadline()
+    }
+
     // get time
     pub fn get_time(&mut self) -> u64{
         self.clock.get_time()

@@ -30,6 +30,7 @@ pub struct LocalConfig {
     pub proxy_address: String,
     #[serde(default)]
     pub use_proxy: bool,
+    pub adaptive_deadline: bool,
     pub output_filepath: String,
 }
 
