@@ -79,7 +79,7 @@ services:
       CLUSTER_CONFIG_FILE: "/app/cluster-config.toml"
       OMNIPAXOS_NODE_ADDRS: "s1:8000,s2:8000,s3:8000"
       OMNIPAXOS_PROXY_ADDRESS: "proxy:9000"
-      OMNIPAXOS_SERVER_ADDRESS: "s2:8000" # Overwrite server_address in client config TOML
+      OMNIPAXOS_SERVER_ADDRESS: "s1:8000" # Overwrite server_address in client config TOML
     volumes:
       - ./client-2-config.toml:/app/client-config.toml
       - ./cluster-config.toml:/app/cluster-config.toml
