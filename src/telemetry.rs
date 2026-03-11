@@ -39,6 +39,7 @@ pub struct SystemMetrics {
     pub nodes: HashMap<NodeId, NodeMetrics>,
     pub total_sent: usize,
     pub fast_path_committed: usize,
+    pub fast_path_aborted: usize,
     pub slow_path_committed: usize,
     pub fast_path_ratio: f64,
     pub slow_path_ratio: f64,
@@ -142,6 +143,13 @@ impl TelemetryWriter {
             self.metrics.recompute_ratios();
             self.throughput_window_count += 1;
         }
+    }
+
+    /// Record a fast-path abort (timeout fallback to slow path).
+    pub fn record_fast_path_abort(&mut self, client_id: ClientId, request_id: CommandId) {
+        self.pending_timestamps.remove(&(client_id, request_id));
+        self.metrics.fast_path_aborted += 1;
+        self.metrics.recompute_ratios();
     }
 
     pub fn flush(&mut self) {

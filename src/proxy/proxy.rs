@@ -11,7 +11,7 @@ use crate::dom::request::DomMessage;
 use crate::proxy::config::{ProxyConfig, Server};
 use crate::proxy::network::Network;
 use crate::proxy::types::{ClientRequestKey, ReplySetState, SlowReplySetState};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 
 const NETWORK_BATCH_SIZE: usize = 100;
@@ -20,6 +20,9 @@ pub struct Proxy {
     config: ProxyConfig,
     network: Network,
     pending: HashMap<ClientRequestKey, ()>,
+    pending_messages: HashMap<ClientRequestKey, DomMessage>,
+    fast_path_deadlines: HashMap<ClientRequestKey, u64>,
+    aborted_fast_path: HashSet<ClientRequestKey>,
     reply_sets: HashMap<ClientRequestKey, ReplySetState>,
     slow_reply_sets: HashMap<ClientRequestKey, SlowReplySetState>,
     clock: ClockSim,
@@ -54,6 +57,9 @@ impl Proxy {
             config,
             network,
             pending: HashMap::new(),
+            pending_messages: HashMap::new(),
+            fast_path_deadlines: HashMap::new(),
+            aborted_fast_path: HashSet::new(),
             reply_sets: HashMap::new(),
             slow_reply_sets: HashMap::new(),
             clock: ClockSim::new(
@@ -91,6 +97,8 @@ impl Proxy {
         let start = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
         let mut metrics_flush_interval = tokio::time::interval_at(start, std::time::Duration::from_secs(1));
         metrics_flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut fast_path_timeout_interval = tokio::time::interval(std::time::Duration::from_millis(1));
+        fast_path_timeout_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 _ = self.network.client_messages.recv_many(&mut client_msg_buf, NETWORK_BATCH_SIZE) => {
@@ -98,6 +106,9 @@ impl Proxy {
                 },
                 _ = self.network.server_messages.recv_many(&mut server_msg_buf, NETWORK_BATCH_SIZE) => {
                     self.handle_server_messages(&mut server_msg_buf).await;
+                },
+                _ = fast_path_timeout_interval.tick() => {
+                    self.handle_fast_path_timeouts().await;
                 },
                 _ = metrics_flush_interval.tick() => {
                     self.flush_metrics();
@@ -123,18 +134,23 @@ impl Proxy {
                     self.pending.insert(key, ());
                     self.telemetry.record_client_request(client_id, *command_id);
                     self.client_deadlines.entry(client_id).or_insert(2*self.clock.get_uncertainty() as u64);
-                }
-            }
-            let send_time = self.clock.get_time();
-            let deadline = self.get_deadline(send_time);
-            let dom_message = DomMessage::new(client_id, message, deadline, send_time);
+                    let send_time = self.clock.get_time();
+                    let adaptive_deadline = self.get_adaptive_deadline();
+                    let deadline = self.get_deadline(send_time, adaptive_deadline);
+                    let fast_path_timeout = self.get_fast_path_timeout(deadline, adaptive_deadline);
+                    let dom_message = DomMessage::new(client_id, message.clone(), deadline, send_time);
+                    self.pending_messages.insert(key, dom_message.clone());
+                    self.fast_path_deadlines.insert(key, fast_path_timeout);
 
-            // Multicast to all servers as ProxyMessage::Append
-            for server in self.config.targets() {
-                debug!("Forward client {} -> server {}", client_id, server.id);
-                self.network
-                    .send_to_server(server.id, ProxyMessage::Append(dom_message.clone()))
-                    .await;
+                    // Multicast to all servers as ProxyMessage::Append
+                    for server in self.config.targets() {
+                        debug!("Forward client {} -> server {}", client_id, server.id);
+                        self.network
+                            .send_to_server(server.id, ProxyMessage::Append(dom_message.clone()))
+                            .await;
+                    }
+                    continue;
+                }
             }
         }
     }
@@ -158,12 +174,80 @@ impl Proxy {
         }
     }
 
-    fn get_deadline(&mut self, send_time: u64) -> u64 {
+    fn get_adaptive_deadline(&self) -> u64 {
+        (self.client_deadlines.values().max().copied().unwrap_or(0) as f64 * 0.95) as u64
+    }
+
+    fn get_deadline(&self, send_time: u64, adaptive_deadline: u64) -> u64 {
         let epsilon = self.clock.get_uncertainty() as u64;
-        // debug!("Client deadlines values: {:?}", self.client_deadlines.values().collect::<Vec<_>>());
-        let adaptive_deadline = (self.client_deadlines.values().max().copied().unwrap_or(0) as f64 * 0.95) as u64;
-        // debug!("Adaptive deadline = {adaptive_deadline}");
         adaptive_deadline + send_time + 2 * epsilon
+    }
+
+    fn get_fast_path_timeout(&self, deadline: u64, adaptive_deadline: u64) -> u64 {
+        let epsilon = self.clock.get_uncertainty() as u64;
+        let rtt = adaptive_deadline.saturating_mul(2);
+        deadline + rtt + epsilon
+    }
+
+    fn should_abort_fast_path(&mut self, key: ClientRequestKey) -> bool {
+        if self.aborted_fast_path.contains(&key) {
+            return false;
+        }
+        if !self.pending.contains_key(&key) {
+            return false;
+        }
+        let now = self.clock.get_time();
+        let timeout_at = match self.fast_path_deadlines.get(&key) {
+            Some(t) => *t,
+            None => return false,
+        };
+        now >= timeout_at
+    }
+
+    async fn abort_fast_path(&mut self, key: ClientRequestKey) {
+        if !self.pending.contains_key(&key) {
+            return;
+        }
+        let abort_msg = match self.pending_messages.get(&key) {
+            Some(msg) => msg.clone(),
+            None => return,
+        };
+        self.aborted_fast_path.insert(key);
+        self.reply_sets.remove(&key);
+        self.fast_path_deadlines.remove(&key);
+        self.telemetry
+            .record_fast_path_abort(abort_msg.client_id, abort_msg.message.command_id());
+
+        let mut any_sent = false;
+        for server in self.config.targets() {
+            debug!(
+                "Fast path timeout for client {} command {}, sending slow-path abort to server {}",
+                abort_msg.client_id, abort_msg.message.command_id(), server.id
+            );
+            self.network
+                .send_to_server(server.id, ProxyMessage::AbortFastPath(abort_msg.clone()))
+                .await;
+            any_sent = true;
+        }
+        if !any_sent {
+            warn!(
+                "Fast path timeout for client {} command {}, but no servers configured to receive abort",
+                abort_msg.client_id, abort_msg.message.command_id()
+            );
+        }
+    }
+
+    async fn handle_fast_path_timeouts(&mut self) {
+        let keys: Vec<ClientRequestKey> = self
+            .fast_path_deadlines
+            .keys()
+            .copied()
+            .collect();
+        for key in keys {
+            if self.should_abort_fast_path(key) {
+                self.abort_fast_path(key).await;
+            }
+        }
     }
 
     async fn handle_fast_reply(&mut self, reply: FastReply) {
@@ -176,6 +260,9 @@ impl Proxy {
             );
         }
         let key = ClientRequestKey::new(reply.client_id, reply.request_id);
+        if self.aborted_fast_path.contains(&key) {
+            return;
+        }
         let state = self
             .reply_sets
             .entry(key)
@@ -245,6 +332,9 @@ impl Proxy {
             self.telemetry.record_slow_path_commit(sr.client_id, sr.request_id);
             self.reply_sets.remove(&key);
             self.slow_reply_sets.remove(&key);
+            self.fast_path_deadlines.remove(&key);
+            self.pending_messages.remove(&key);
+            self.aborted_fast_path.remove(&key);
             let _ = self.pending.remove(&key);
             let response = match result {
                 ServerResult::Write(id) => ServerMessage::Write(id),
@@ -324,6 +414,9 @@ impl Proxy {
         };
         self.pending.remove(&key);
         self.reply_sets.remove(&key);
+        self.pending_messages.remove(&key);
+        self.fast_path_deadlines.remove(&key);
+        self.aborted_fast_path.remove(&key);
         self.network.send_to_client(client_id, msg);
     }
 

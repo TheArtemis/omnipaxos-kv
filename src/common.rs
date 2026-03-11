@@ -108,6 +108,7 @@ pub mod messages {
     pub enum ProxyMessage {
         Commit(CommitMessage),
         Append(DomMessage),
+        AbortFastPath(DomMessage),
     }
 }
 
