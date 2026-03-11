@@ -8,6 +8,7 @@ use omnipaxos::{
 };
 use serde::{Deserialize, Serialize};
 use omnipaxos_kv::clock::ClockConfig;
+use omnipaxos_kv::owd::config::OwdConfig;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ClusterConfig {
@@ -31,6 +32,7 @@ pub struct LocalConfig {
     #[serde(default)]
     pub use_proxy: bool,
     pub adaptive_deadline: bool,
+    pub default_deadline: u64,
     pub output_filepath: String,
 }
 
@@ -41,6 +43,8 @@ pub struct OmniPaxosKVConfig {
     #[serde(flatten)]
     pub cluster: ClusterConfig,
     pub clock: ClockConfig,
+    #[serde(default)]
+    pub owd: OwdConfig,
 }
 
 impl Into<OmniPaxosConfig> for OmniPaxosKVConfig {

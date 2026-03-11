@@ -18,6 +18,7 @@ pub const MAX_LATENCY_SAMPLES: usize = 1000;
 pub struct NodeMetrics {
     pub fast_path_count: usize,
     pub fast_path_latencies_us: Vec<u128>,
+    pub latest_owd_deadline: u64,
 }
 
 impl NodeMetrics {
@@ -48,6 +49,7 @@ pub struct SystemMetrics {
     pub overall_response_ratio: f64,
     pub throughput_rps: f64,
     pub slow_path_latencies_us: Vec<u128>,
+    pub max_owd_deadline: u64,
 }
 
 impl SystemMetrics {
@@ -120,6 +122,15 @@ impl TelemetryWriter {
             let entry = self.metrics.nodes.entry(replica_id).or_default();
             entry.fast_path_count += 1;
             entry.push_fast_path_latency(latency_us);
+        }
+    }
+
+    /// Record latest OWD-based deadline from a replica.
+    pub fn record_owd_deadline(&mut self, replica_id: NodeId, deadline_length: u64) {
+        let entry = self.metrics.nodes.entry(replica_id).or_default();
+        entry.latest_owd_deadline = deadline_length;
+        if deadline_length > self.metrics.max_owd_deadline {
+            self.metrics.max_owd_deadline = deadline_length;
         }
     }
 

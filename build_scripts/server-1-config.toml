@@ -5,8 +5,14 @@ listen_address = "127.0.0.1"
 listen_port = 8001
 proxy_address = "127.0.0.1:9000"
 use_proxy = true
-adaptive_deadline = false
+adaptive_deadline = true
+default_deadline = 1000
 output_filepath = "./logs/server-1.json"
+
+[owd]
+default_value = 1000
+percentile = 0.95
+window_size = 1000
 
 [clock]
 drift_rate = 0

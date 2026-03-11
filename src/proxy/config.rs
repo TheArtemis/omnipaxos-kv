@@ -30,6 +30,10 @@ pub struct ProxyConfig {
     pub clock: crate::clock::ClockConfig,
     #[serde(default)]
     pub initial_flexible_superquorum: Option<FlexibleQuorum>,
+    #[serde(default)]
+    pub adaptive_deadline: bool,
+    #[serde(default = "default_deadline")]
+    pub default_deadline: u64,
     /// Path where system-wide metrics are written as JSON.
     #[serde(default = "default_metrics_filepath")]
     pub metrics_filepath: String,
@@ -37,6 +41,10 @@ pub struct ProxyConfig {
 
 fn default_metrics_filepath() -> String {
     "./logs/metrics.json".to_string()
+}
+
+fn default_deadline() -> u64 {
+    1000
 }
 
 impl ProxyConfig {
