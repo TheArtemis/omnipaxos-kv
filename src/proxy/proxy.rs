@@ -15,8 +15,6 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 
 const NETWORK_BATCH_SIZE: usize = 100;
-// Used as "address" of the proxy
-pub const DEFAULT_PROXY_ADDRESS_KEY: u64 = 1_234_567;
 
 pub struct Proxy {
     config: ProxyConfig,

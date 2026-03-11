@@ -6,7 +6,7 @@ use omnipaxos::{
     util::{LogEntry, NodeId},
     OmniPaxos, OmniPaxosConfig,
 };
-use omnipaxos_kv::{common::{kv::*, log_hash::LogHash, messages::*, utils::Timestamp}, proxy::proxy::DEFAULT_PROXY_ADDRESS_KEY};
+use omnipaxos_kv::{common::{kv::*, log_hash::LogHash, messages::*, utils::Timestamp, DEFAULT_NODE_ID}};
 use omnipaxos_kv::dom::dom::Dom;
 use omnipaxos_kv::dom::config::DomConfig;
 use omnipaxos_storage::memory_storage::MemoryStorage;
@@ -233,7 +233,7 @@ impl OmniPaxosServer {
                         Some(r) => ServerResult::Read(command.id, r),
                         None => ServerResult::Write(command.id),
                     };
-                    let deadline_length = self.dom.request_deadline_from_owd(DEFAULT_PROXY_ADDRESS_KEY);
+                    let deadline_length = self.dom.request_deadline_from_owd(DEFAULT_NODE_ID);
                     let reply = SlowPathReply {
                         replica_id: self.id,
                         client_id: command.client_id,
@@ -259,7 +259,7 @@ impl OmniPaxosServer {
     fn update_database_and_respond_fast(&mut self, command: Command) {
         let read = self.database.handle_command(command.kv_cmd);
         let ballot = self.omnipaxos.get_promise();
-        let deadline_length = self.dom.request_deadline_from_owd(DEFAULT_PROXY_ADDRESS_KEY);
+        let deadline_length = self.dom.request_deadline_from_owd(DEFAULT_NODE_ID);
         let fast_reply = FastReply {
             ballot,
             replica_id: self.id,
@@ -286,7 +286,7 @@ impl OmniPaxosServer {
     // Replicas just respond with a fast reply without updating the database
     fn respond_fast(&mut self, command: Command) {
         let ballot = self.omnipaxos.get_promise();
-        let deadline_length = self.dom.request_deadline_from_owd(DEFAULT_PROXY_ADDRESS_KEY);
+        let deadline_length = self.dom.request_deadline_from_owd(DEFAULT_NODE_ID);
         let fast_reply = FastReply {
             ballot,
             replica_id: self.id,
@@ -371,7 +371,7 @@ impl OmniPaxosServer {
                     }
                     let message_passing_delay = self.dom.get_time() - dom_message.send_time;
                     self.dom
-                        .add_element_to_owd(DEFAULT_PROXY_ADDRESS_KEY, message_passing_delay);
+                        .add_element_to_owd(DEFAULT_NODE_ID, message_passing_delay);
                     self.dom.push_by_deadline(dom_message);
                 }
                 ProxyMessage::Commit(commit_message) => {

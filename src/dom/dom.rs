@@ -53,8 +53,8 @@ impl Dom {
     }
 
     // Add an element into owd
-    pub fn add_element_to_owd(&mut self, proxy_address: u64, new_elem: u64){
-        self.owd.add_element(proxy_address, new_elem)
+    pub fn add_element_to_owd(&mut self, node_id: u64, new_elem: u64){
+        self.owd.add_element(node_id, new_elem)
     }
 
     // get time
@@ -63,14 +63,14 @@ impl Dom {
     }
 
     // request deadline to owd
-    pub fn request_deadline_from_owd(&mut self, proxy_address: u64) -> u64{
-        let deadline = self.owd.get_adaptive_deadline(proxy_address);
+    pub fn request_deadline_from_owd(&mut self, node_id: u64) -> u64{
+        let deadline = self.owd.get_adaptive_deadline(node_id);
         deadline
     }
 
     // return size of element inside owd for client_id
-    pub fn get_size(&mut self, proxy_address: u64) -> u64{
-        return self.owd.get_size(proxy_address)
+    pub fn get_size(&mut self, node_id: u64) -> u64{
+        return self.owd.get_size(node_id)
     }
 
     // Implemented for testing
