@@ -34,6 +34,19 @@ pub struct LocalConfig {
     pub adaptive_deadline: bool,
     pub default_deadline: u64,
     pub output_filepath: String,
+    /// crash-stop behavior for failure-injection experiments.
+    #[serde(default)]
+    pub failure_injection: bool,
+    #[serde(default = "default_failure_probability")]
+    pub failure_probability: f64,
+    #[serde(default = "default_failure_check_interval_ms")]
+    pub failure_check_interval_ms: u64,
+    /// Duration of simulated outage before automatic rejoin.
+    #[serde(default = "default_failure_downtime_ms")]
+    pub failure_downtime_ms: u64,
+    /// Maximum number of simulated failures. 0 means unlimited.
+    #[serde(default = "default_failure_max_events")]
+    pub failure_max_events: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -86,7 +99,14 @@ impl OmniPaxosKVConfig {
                     .with_list_parse_key("node_addrs"),
             )
             .build()?;
-        config.try_deserialize()
+        let cfg: OmniPaxosKVConfig = config.try_deserialize()?;
+        if !(0.0..=1.0).contains(&cfg.local.failure_probability) {
+            return Err(ConfigError::Message(format!(
+                "Invalid failure_probability {}: expected value in [0.0, 1.0]",
+                cfg.local.failure_probability
+            )));
+        }
+        Ok(cfg)
     }
 
     pub fn get_peers(&self, node: NodeId) -> Vec<NodeId> {
@@ -97,4 +117,20 @@ impl OmniPaxosKVConfig {
             .filter(|&id| id != node)
             .collect()
     }
+}
+
+fn default_failure_probability() -> f64 {
+    0.0
+}
+
+fn default_failure_check_interval_ms() -> u64 {
+    1000
+}
+
+fn default_failure_downtime_ms() -> u64 {
+    3000
+}
+
+fn default_failure_max_events() -> u64 {
+    1
 }
