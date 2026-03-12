@@ -131,15 +131,22 @@ impl OmniPaxosServer {
                         match msg.message {
                             ClientMessage::Append(command_id, kv_command) => {
                                 debug!("{}: early path — processing message (client_id={}, command_id={})", self.id, msg.client_id, command_id);
+                                let leader_id = match self.omnipaxos.get_current_leader() {
+                                    Some((id, _)) => id,
+                                    None => {
+                                        warn!("{}: no leader known for fast path; skipping command (client_id={}, command_id={})", self.id, msg.client_id, command_id);
+                                        continue;
+                                    }
+                                };
                                 let command = Command {
                                     client_id: msg.client_id,
-                                    coordinator_id: self.id,
+                                    coordinator_id: leader_id,
                                     id: command_id,
                                     kv_cmd: kv_command,
                                 };
 
                                 // If we are the leader, update the database and respond with a fast reply
-                                if self.id == self.omnipaxos.get_current_leader().unwrap().0 {
+                                if self.id == leader_id {
                                     self.update_database_and_respond_fast(command);
                                 } else {
                                     // If we are a follower we just respond with a fast reply
@@ -245,7 +252,7 @@ impl OmniPaxosServer {
                     debug!("{}: slow path — sending SlowPathReply (client_id={}, command_id={})", self.id, command.client_id, command.id);
                     self.network.send_to_proxy(ServerMessage::SlowPathReply(reply));
                 }
-            } else if command.coordinator_id == self.id {
+            } else if !self.config.local.use_proxy && command.coordinator_id == self.id {
                 // Non-proxy mode: coordinator responds directly to the client.
                 let read = self.database.handle_command(command.kv_cmd);
                 let response = match read {
@@ -258,7 +265,11 @@ impl OmniPaxosServer {
     }
 
     fn update_database_and_respond_fast(&mut self, command: Command) {
-        let read = self.database.handle_command(command.kv_cmd);
+        // Speculative execution for fast path: update DB and reply, but do NOT
+        // touch the OmniPaxos log or log hash here. The command will only be
+        // appended/committed once the proxy sends a CommitMessage.
+        
+        let read = self.database.handle_command(command.kv_cmd.clone());
         let ballot = self.omnipaxos.get_promise();
         let deadline_length = self.compute_deadline_length();
         let fast_reply = FastReply {
@@ -270,17 +281,26 @@ impl OmniPaxosServer {
                 Some(read_result) => Some(ServerResult::Read(command.id, read_result)),
                 None => Some(ServerResult::Write(command.id)),
             },
+            // Hash reflects only committed log entries (decided via consensus or
+            // appended on Commit). Fast-path speculative entries are not included.
             hash: self.log_hash.clone(),
             deadline_length,
         };
 
         let msg = ServerMessage::FastReply(fast_reply);
-        if self.proxy_command_ids.remove(&(command.client_id, command.id)) {
-            self.network.send_to_proxy(msg);
-        } else {
+        let key = (command.client_id, command.id);
+        if !self.proxy_command_ids.contains(&key) {
             let client_id = command.client_id;
             let cmd_id = command.id;
-            warn!("No proxy command id found for fast reply to client {client_id} with command id {cmd_id}");
+            warn!(
+                "No proxy command id found for fast reply to client {client_id} with command id {cmd_id}"
+            );
+        } else {
+            // Track this command locally so that when the proxy later sends a
+            // CommitMessage after superquorum, we can append it via
+            // append_skip_consensus just like followers.
+            self.commit_queue.push(command, CommitState::Pending);
+            self.network.send_to_proxy(msg);
         }
     }
 
@@ -340,8 +360,18 @@ impl OmniPaxosServer {
         }
 
         for command in commands {
+            // Once the proxy has declared a fast-path superquorum with consistent
+            // hashes, we record the command in the OmniPaxos log locally,
+            // skipping consensus, and update the committed log hash.
+            self.log_hash.add_entry(&command);
+            self.omnipaxos
+                .append_skip_consensus(command.clone())
+                .expect("failed to append fast reply to OmniPaxos log");
             self.update_database(command);
         }
+
+        // Keep the decided index up to date
+        self.current_decided_idx = self.omnipaxos.get_decided_idx();
     }
 
 
@@ -483,10 +513,12 @@ impl OmniPaxosServer {
         if self.config.local.use_proxy {
             self.network.set_start_signal(start_time);
         }
-        for client_id in 1..self.config.local.num_clients as ClientId + 1 {
-            debug!("Sending start message to client {client_id}");
-            let msg = ServerMessage::StartSignal(start_time);
-            self.network.send_to_client(client_id, msg);
+        if !self.config.local.use_proxy {
+            for client_id in 1..self.config.local.num_clients as ClientId + 1 {
+                debug!("Sending start message to client {client_id}");
+                let msg = ServerMessage::StartSignal(start_time);
+                self.network.send_to_client(client_id, msg);
+            }
         }
         if self.config.local.use_proxy {
             self.network.send_to_proxy(ServerMessage::StartSignal(start_time));
