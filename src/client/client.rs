@@ -17,10 +17,26 @@ pub struct Client {
     active_server: NodeId,
     final_request_count: Option<usize>,
     next_request_id: usize,
+    history_filepath: String,
 }
 
 impl Client {
     pub async fn new(config: ClientConfig) -> Self {
+        let client_id = config
+            .location
+            .rsplit('-')
+            .next()
+            .and_then(|s| s.parse::<ClientId>().ok())
+            .unwrap_or(config.server_id);
+        let history_filepath = ClientData::history_path_for_output(&config.output_filepath);
+        let client_data = ClientData::new(client_id);
+        if let Err(err) = client_data.initialize_history_file(&history_filepath) {
+            warn!(
+                "{}: failed to initialize history file {}: {}",
+                client_id, history_filepath, err
+            );
+        }
+
         let server_network = Network::new(
             vec![(config.server_id, config.server_address.clone())],
             NETWORK_BATCH_SIZE,
@@ -36,14 +52,15 @@ impl Client {
             None
         };
         Client {
-            id: config.server_id,
+            id: client_id,
             server_network,
             proxy_network,
             active_server: config.server_id,
             config,
-            client_data: ClientData::new(),
+            client_data,
             final_request_count: None,
             next_request_id: 0,
+            history_filepath,
         }
     }
 
@@ -170,12 +187,26 @@ impl Client {
     }
 
     fn handle_server_message(&mut self, msg: ServerMessage) {
-        //debug!("Received {msg:?}");
+        // Ignore non-terminal protocol chatter; only count concrete command results.
         match msg {
-            ServerMessage::StartSignal(_) => (),
-            server_response => {
-                let cmd_id = server_response.command_id();
-                self.client_data.new_response(cmd_id);
+            ServerMessage::StartSignal(_) => {}
+            ServerMessage::Write(cmd_id) => {
+                self.client_data
+                    .new_response(cmd_id, &ServerResult::Write(cmd_id));
+            }
+            ServerMessage::Read(cmd_id, value) => {
+                self.client_data
+                    .new_response(cmd_id, &ServerResult::Read(cmd_id, value));
+            }
+            ServerMessage::FastReply(reply) => {
+                if let Some(result) = reply.result {
+                    self.client_data.new_response(reply.request_id, &result);
+                }
+            }
+            ServerMessage::SlowPathReply(reply) => {
+                if let Some(result) = reply.result {
+                    self.client_data.new_response(reply.request_id, &result);
+                }
             }
         }
     }
@@ -187,7 +218,8 @@ impl Client {
             false => KVCommand::Get(key.clone()),
         };
         
-        let request = ClientMessage::Append(self.next_request_id, cmd);
+        let command_id = self.next_request_id;
+        let request = ClientMessage::Append(command_id, cmd.clone());
         debug!("Sending {request:?}");
 
         if self.config.use_proxy {
@@ -202,7 +234,7 @@ impl Client {
         
 
         // Update client data
-        self.client_data.new_request(is_write);
+        self.client_data.new_request(command_id, &cmd);
         self.next_request_id += 1
     }
 
@@ -235,6 +267,8 @@ impl Client {
         self.client_data.save_summary(self.config.clone())?;
         self.client_data
             .to_csv(self.config.output_filepath.clone())?;
+        self.client_data
+            .save_history(self.history_filepath.clone())?;
         
         Ok(())
     }
