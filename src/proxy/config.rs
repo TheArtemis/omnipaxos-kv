@@ -4,6 +4,19 @@ use config::{Config, ConfigError, Environment, File};
 use omnipaxos::util::{FlexibleQuorum, NodeId};
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TelemetryMode {
+    Yes,
+    No,
+}
+
+impl TelemetryMode {
+    pub fn continuous_flush(self) -> bool {
+        matches!(self, Self::Yes)
+    }
+}
+
 /// A target server: id and address. Used by the proxy instead of separate id/address lists.
 #[derive(Debug, Clone)]
 pub struct Server {
@@ -37,10 +50,17 @@ pub struct ProxyConfig {
     /// Path where system-wide metrics are written as JSON.
     #[serde(default = "default_metrics_filepath")]
     pub metrics_filepath: String,
+    /// `yes` to flush metrics continuously, `no` to flush only at shutdown.
+    #[serde(default = "default_telemetry_mode")]
+    pub telemetry: TelemetryMode,
 }
 
 fn default_metrics_filepath() -> String {
     "./logs/metrics.json".to_string()
+}
+
+fn default_telemetry_mode() -> TelemetryMode {
+    TelemetryMode::Yes
 }
 
 fn default_deadline() -> u64 {

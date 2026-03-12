@@ -4,6 +4,7 @@ node_addrs = ["127.0.0.1:8001", "127.0.0.1:8002", "127.0.0.1:8003"]
 proxy_listen_address = "0.0.0.0"
 proxy_listen_port = 9000
 metrics_filepath = "./logs/metrics.json"
+telemetry = "no"
 
 [clock]
 drift_rate = 50

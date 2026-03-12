@@ -6,6 +6,7 @@ proxy_listen_port = 9000
 adaptive_deadline = true
 default_deadline = 1000
 metrics_filepath = "./logs/metrics.json"
+telemetry = "yes"
 
 [clock]
 drift_rate = 50
