@@ -177,7 +177,7 @@ pub mod kv {
     use std::collections::HashMap;
 
     // Re-export telemetry types so existing `common::kv::*` imports keep working.
-    pub use crate::telemetry::{MAX_LATENCY_SAMPLES, NodeMetrics, SystemMetrics};
+    pub use crate::telemetry::{NodeMetrics, SystemMetrics};
     /// Backward-compatible alias for [`NodeMetrics`].
     pub type Metrics = NodeMetrics;
 
