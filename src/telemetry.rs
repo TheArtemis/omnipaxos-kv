@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::SystemTime;
 
 use log::warn;
 use omnipaxos::util::NodeId;
@@ -7,29 +7,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::common::kv::{ClientId, CommandId};
 
-pub const MAX_LATENCY_SAMPLES: usize = 1000;
-
 // ---------------------------------------------------------------------------
 // Per-node metrics
 // ---------------------------------------------------------------------------
 
 /// Fast-path counters
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct NodeMetrics {
-    pub fast_path_count: usize,
-    pub fast_path_latencies_us: Vec<u128>,
-    pub latest_owd_deadline: u64,
-}
-
-impl NodeMetrics {
-    pub fn push_fast_path_latency(&mut self, latency: u128) {
-        self.fast_path_latencies_us.push(latency);
-        if self.fast_path_latencies_us.len() > MAX_LATENCY_SAMPLES {
-            let excess = self.fast_path_latencies_us.len() - MAX_LATENCY_SAMPLES;
-            self.fast_path_latencies_us.drain(0..excess);
-        }
-    }
-}
+pub struct NodeMetrics {}
 
 // ---------------------------------------------------------------------------
 // System-wide aggregated metrics
@@ -44,25 +28,16 @@ pub struct SystemMetrics {
     pub slow_path_committed: usize,
     pub fast_path_ratio: f64,
     pub slow_path_ratio: f64,
-    pub fast_path_response_ratio: f64,
-    pub slow_path_response_ratio: f64,
-    pub overall_response_ratio: f64,
-    pub throughput_rps: f64,
-    pub slow_path_latencies_us: Vec<u128>,
+    pub avg_fast_path_latency_us: f64,
+    pub avg_slow_path_latency_us: f64,
+    pub avg_total_latency: f64,
+    pub avg_throughput_rps: f64,
     pub max_owd_deadline: u64,
 }
 
 impl SystemMetrics {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    pub fn push_slow_path_latency(&mut self, latency: u128) {
-        self.slow_path_latencies_us.push(latency);
-        if self.slow_path_latencies_us.len() > MAX_LATENCY_SAMPLES {
-            let excess = self.slow_path_latencies_us.len() - MAX_LATENCY_SAMPLES;
-            self.slow_path_latencies_us.drain(0..excess);
-        }
     }
 
     pub fn recompute_ratios(&mut self) {
@@ -87,48 +62,43 @@ impl SystemMetrics {
 pub struct TelemetryWriter {
     pub metrics: SystemMetrics,
     filepath: String,
-    pub throughput_window_count: usize,
-    throughput_window_start: Instant,
+    created_at: SystemTime,
+    fast_path_latency_total_us: u128,
+    fast_path_latency_samples: usize,
+    slow_path_latency_total_us: u128,
+    slow_path_latency_samples: usize,
     /// Request send times for latency computation.
-    pending_timestamps: HashMap<(ClientId, CommandId), Instant>,
+    pending_timestamps: HashMap<(ClientId, CommandId), SystemTime>,
 }
 
 impl TelemetryWriter {
     pub fn new(filepath: String) -> Self {
-        Self {
+        let mut writer = Self {
             metrics: SystemMetrics::new(),
             filepath,
-            throughput_window_count: 0,
-            throughput_window_start: Instant::now(),
+            created_at: SystemTime::now(),
+            fast_path_latency_total_us: 0,
+            fast_path_latency_samples: 0,
+            slow_path_latency_total_us: 0,
+            slow_path_latency_samples: 0,
             pending_timestamps: HashMap::new(),
-        }
+        };
+
+        // Clear stale metrics from previous runs as soon as telemetry starts.
+        writer.flush();
+        writer
     }
 
     /// Record that a client request was sent (timestamp + total_sent + ratios).
     pub fn record_client_request(&mut self, client_id: ClientId, command_id: CommandId) {
         self.pending_timestamps
-            .insert((client_id, command_id), Instant::now());
+            .insert((client_id, command_id), SystemTime::now());
         self.metrics.total_sent += 1;
         self.metrics.recompute_ratios();
     }
 
-    /// Record a fast-path reply from a replica (per-replica latency).
-    pub fn record_fast_reply(&mut self, replica_id: NodeId, client_id: ClientId, request_id: CommandId) {
-        if let Some(latency_us) = self
-            .pending_timestamps
-            .get(&(client_id, request_id))
-            .map(|t| t.elapsed().as_micros())
-        {
-            let entry = self.metrics.nodes.entry(replica_id).or_default();
-            entry.fast_path_count += 1;
-            entry.push_fast_path_latency(latency_us);
-        }
-    }
-
     /// Record latest OWD-based deadline from a replica.
-    pub fn record_owd_deadline(&mut self, replica_id: NodeId, deadline_length: u64) {
-        let entry = self.metrics.nodes.entry(replica_id).or_default();
-        entry.latest_owd_deadline = deadline_length;
+    pub fn record_owd_deadline(&mut self, _replica_id: NodeId, deadline_length: u64) {
         if deadline_length > self.metrics.max_owd_deadline {
             self.metrics.max_owd_deadline = deadline_length;
         }
@@ -136,44 +106,94 @@ impl TelemetryWriter {
 
     /// Record a fast-path commit (clear pending + committed count + ratios + throughput).
     pub fn record_fast_path_commit(&mut self, client_id: ClientId, request_id: CommandId) {
-        self.pending_timestamps.remove(&(client_id, request_id));
+        if let Some(sent_at) = self.pending_timestamps.remove(&(client_id, request_id)) {
+            if let Some(latency_us) = Self::elapsed_micros(sent_at) {
+                self.fast_path_latency_total_us = self.fast_path_latency_total_us.saturating_add(latency_us);
+                self.fast_path_latency_samples += 1;
+                self.update_average_latencies();
+            }
+        }
         self.metrics.fast_path_committed += 1;
         self.metrics.recompute_ratios();
-        self.throughput_window_count += 1;
+        self.update_average_throughput();
     }
 
     /// Record a slow-path commit (take latency + committed count + ratios + throughput).
     pub fn record_slow_path_commit(&mut self, client_id: ClientId, request_id: CommandId) {
-        if let Some(latency_us) = self
-            .pending_timestamps
-            .remove(&(client_id, request_id))
-            .map(|t| t.elapsed().as_micros())
-        {
-            self.metrics.push_slow_path_latency(latency_us);
-            self.metrics.slow_path_committed += 1;
-            self.metrics.recompute_ratios();
-            self.throughput_window_count += 1;
+        if let Some(sent_at) = self.pending_timestamps.remove(&(client_id, request_id)) {
+            if let Some(latency_us) = Self::elapsed_micros(sent_at) {
+                self.slow_path_latency_total_us =
+                    self.slow_path_latency_total_us.saturating_add(latency_us);
+                self.slow_path_latency_samples += 1;
+                self.update_average_latencies();
+            }
         }
+        self.metrics.slow_path_committed += 1;
+        self.metrics.recompute_ratios();
+        self.update_average_throughput();
     }
 
     /// Record a fast-path abort (timeout fallback to slow path).
-    pub fn record_fast_path_abort(&mut self, client_id: ClientId, request_id: CommandId) {
-        self.pending_timestamps.remove(&(client_id, request_id));
+    pub fn record_fast_path_abort(&mut self, _client_id: ClientId, _request_id: CommandId) {
+        // Keep the pending timestamp: the request continues on slow path and
+        // latency is measured when the leader slow-path reply arrives.
         self.metrics.fast_path_aborted += 1;
         self.metrics.recompute_ratios();
+    }
+
+    fn update_average_throughput(&mut self) {
+        let elapsed_secs = match self.created_at.elapsed() {
+            Ok(duration) => duration.as_secs_f64(),
+            Err(e) => {
+                warn!("SystemTime drift while computing throughput: {e}");
+                0.0
+            }
+        };
+        let total_committed = self.metrics.fast_path_committed + self.metrics.slow_path_committed;
+        self.metrics.avg_throughput_rps = if elapsed_secs > 0.0 {
+            total_committed as f64 / elapsed_secs
+        } else {
+            0.0
+        };
+    }
+
+    fn elapsed_micros(sent_at: SystemTime) -> Option<u128> {
+        match sent_at.elapsed() {
+            Ok(duration) => Some(duration.as_micros()),
+            Err(e) => {
+                warn!("SystemTime drift while computing latency: {e}");
+                None
+            }
+        }
+    }
+
+    fn update_average_latencies(&mut self) {
+        self.metrics.avg_fast_path_latency_us = if self.fast_path_latency_samples > 0 {
+            self.fast_path_latency_total_us as f64 / self.fast_path_latency_samples as f64
+        } else {
+            0.0
+        };
+        self.metrics.avg_slow_path_latency_us = if self.slow_path_latency_samples > 0 {
+            self.slow_path_latency_total_us as f64 / self.slow_path_latency_samples as f64
+        } else {
+            0.0
+        };
+
+        let total_samples = self.fast_path_latency_samples + self.slow_path_latency_samples;
+        let total_latency_us = self
+            .fast_path_latency_total_us
+            .saturating_add(self.slow_path_latency_total_us);
+        self.metrics.avg_total_latency = if total_samples > 0 {
+            total_latency_us as f64 / total_samples as f64
+        } else {
+            0.0
+        };
     }
 
     pub fn flush(&mut self) {
         use std::io::Write;
 
-        let elapsed_secs = self.throughput_window_start.elapsed().as_secs_f64();
-        self.metrics.throughput_rps = if elapsed_secs > 0.0 {
-            self.throughput_window_count as f64 / elapsed_secs
-        } else {
-            0.0
-        };
-        self.throughput_window_count = 0;
-        self.throughput_window_start = Instant::now();
+        self.update_average_throughput();
 
         let json = self.metrics.to_json();
         match std::fs::File::create(&self.filepath) {

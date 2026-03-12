@@ -8,7 +8,7 @@ use crate::common::messages::{
     ClientMessage, CommitMessage, FastReply, ServerResult, ProxyMessage, ServerMessage, SlowPathReply,
 };
 use crate::dom::request::DomMessage;
-use crate::proxy::config::{ProxyConfig, Server};
+use crate::proxy::config::{ProxyConfig, Server, TelemetryMode};
 use crate::proxy::network::Network;
 use crate::proxy::types::{ClientRequestKey, ReplySetState, SlowReplySetState};
 use std::collections::{HashMap, HashSet};
@@ -99,6 +99,7 @@ impl Proxy {
         let start = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
         let mut metrics_flush_interval = tokio::time::interval_at(start, std::time::Duration::from_secs(1));
         metrics_flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let continuous_telemetry = self.config.telemetry == TelemetryMode::Yes;
         let mut fast_path_timeout_interval = tokio::time::interval(std::time::Duration::from_millis(1));
         fast_path_timeout_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -112,7 +113,7 @@ impl Proxy {
                 _ = fast_path_timeout_interval.tick() => {
                     self.handle_fast_path_timeouts().await;
                 },
-                _ = metrics_flush_interval.tick() => {
+                _ = metrics_flush_interval.tick(), if continuous_telemetry => {
                     self.flush_metrics();
                 },
                 _ = &mut shutdown_signal => {
@@ -295,10 +296,7 @@ impl Proxy {
         // 3. Same ballot: insert
         let client_id = reply.client_id;
         let request_id = reply.request_id;
-        let replica_id = reply.replica_id;
         state.replies.push(reply);
-
-        self.telemetry.record_fast_reply(replica_id, client_id, request_id);
 
         if let Some(leader_reply) = self.can_commit(key) {
             self.telemetry.record_fast_path_commit(client_id, request_id);
