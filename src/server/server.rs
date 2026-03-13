@@ -45,6 +45,10 @@ pub struct OmniPaxosServer {
     // Proxy fast path related
     proxy_command_ids: HashSet<(ClientId, CommandId)>,
     commit_queue: CommitQueue,
+    /// Commands applied optimistically via the fast-path.  When the Paxos log
+    /// later decides the same entry (because we append it for durability), we
+    /// skip re-applying their DB writes and re-sending replies.
+    fast_path_executed: HashSet<(ClientId, CommandId)>,
 
     log_hash: LogHash,
 
@@ -74,6 +78,7 @@ impl OmniPaxosServer {
             peers: config.get_peers(config.local.server_id),
             config,
             proxy_command_ids: HashSet::new(),
+            fast_path_executed: HashSet::new(),
             log_hash: LogHash::new(),
             commit_queue: CommitQueue::new(),
             stats_window_start: Instant::now(),
@@ -177,6 +182,9 @@ impl OmniPaxosServer {
                     }
                 }, if deadline_sleep.is_some() => {
                     if !currently_failed {
+                        // RC2: drain any pending Paxos decisions BEFORE executing
+                        // deadline commands so reads observe all committed writes.
+                        self.handle_decided_entries();
                         let due = self.dom.handle_deadline();
                         for msg in due {
                             match msg.message {
@@ -301,9 +309,20 @@ impl OmniPaxosServer {
         for command in commands {
             let key = (command.client_id, command.id);
             if self.proxy_command_ids.remove(&key) {
-                // Only the leader (coordinator) sends SlowPathReply; proxy commits on that single reply.
+                // RC1: if the fast-path already applied this command optimistically,
+                // skip re-applying.  Clean up any lingering commit_queue entry on
+                // followers (in case CommitMessage hasn't arrived yet).
+                if self.fast_path_executed.remove(&key) {
+                    self.commit_queue.remove_by_key(command.client_id, command.id);
+                    continue;
+                }
+                // RC3: apply to DB on EVERY node (not just coordinator) so all
+                // replicas stay consistent under leader failover.
+                let read = self.database.handle_command(command.kv_cmd);
+                // Clean up any pending commit_queue entry (follower fast-path path).
+                self.commit_queue.remove_by_key(command.client_id, command.id);
+                // Only the leader (coordinator) sends SlowPathReply.
                 if command.coordinator_id == self.id {
-                    let read = self.database.handle_command(command.kv_cmd);
                     let result = match read {
                         Some(r) => ServerResult::Read(command.id, r),
                         None => ServerResult::Write(command.id),
@@ -319,20 +338,27 @@ impl OmniPaxosServer {
                     debug!("{}: slow path — sending SlowPathReply (client_id={}, command_id={})", self.id, command.client_id, command.id);
                     self.network.send_to_proxy(ServerMessage::SlowPathReply(reply));
                 }
-            } else if command.coordinator_id == self.id {
-                // Non-proxy mode: coordinator responds directly to the client.
-                let read = self.database.handle_command(command.kv_cmd);
-                let response = match read {
-                    Some(r) => ServerMessage::Read(command.id, r),
-                    None => ServerMessage::Write(command.id),
-                };
-                self.network.send_to_client(command.client_id, response);
+            } else {
+                // proxy_command_ids didn't have this key.
+                if self.fast_path_executed.remove(&key) {
+                    // RC1: fast-path applied this before Paxos decided it; nothing more to do.
+                } else if command.coordinator_id == self.id {
+                    // Non-proxy mode: coordinator responds directly to the client.
+                    let read = self.database.handle_command(command.kv_cmd);
+                    let response = match read {
+                        Some(r) => ServerMessage::Read(command.id, r),
+                        None => ServerMessage::Write(command.id),
+                    };
+                    self.network.send_to_client(command.client_id, response);
+                }
             }
         }
     }
 
     fn update_database_and_respond_fast(&mut self, command: Command) {
-        let read = self.database.handle_command(command.kv_cmd);
+        // Clone kv_cmd so we can both apply it to the DB and append the full
+        // Command to the Paxos log for durability (RC1).
+        let read = self.database.handle_command(command.kv_cmd.clone());
         let ballot = self.omnipaxos.get_promise();
         let deadline_length = self.compute_deadline_length();
         let fast_reply = FastReply {
@@ -348,8 +374,18 @@ impl OmniPaxosServer {
             deadline_length,
         };
 
+        let key = (command.client_id, command.id);
         let msg = ServerMessage::FastReply(fast_reply);
-        if self.proxy_command_ids.remove(&(command.client_id, command.id)) {
+        if self.proxy_command_ids.remove(&key) {
+            // RC1: mark as fast-path executed BEFORE appending to Paxos so that
+            // if the entry is decided in the same loop iteration the decided
+            // handler can detect and skip the re-apply.
+            self.fast_path_executed.insert(key);
+            // Append to the Paxos log for durability so the write survives a
+            // leader failover and all followers can replay it.
+            self.omnipaxos
+                .append(command)
+                .expect("Append to Omnipaxos log failed");
             self.network.send_to_proxy(msg);
         } else {
             let client_id = command.client_id;
@@ -395,15 +431,23 @@ impl OmniPaxosServer {
     fn handle_commit_message(&mut self, commit_message: CommitMessage) {
         let key = (commit_message.client_id, commit_message.command_id);
         if self.proxy_command_ids.contains(&key) {
-            let command = self.commit_queue.get_command_by_key(commit_message.client_id, commit_message.command_id);
-
-            if command.is_some() {
-                self.commit_queue.set_safe_to_commit(command.unwrap());
+            // Normal path: proxy_command_ids still has the key — mark Safe so
+            // flush_safe_to_commit_commands can apply the DB update.
+            if let Some(command) = self.commit_queue.get_command_by_key(
+                commit_message.client_id,
+                commit_message.command_id,
+            ) {
+                self.commit_queue.set_safe_to_commit(command);
             }
+        } else {
+            // RC1: Paxos already decided and applied this command (decided path
+            // removed the proxy_command_ids entry).  Clean up any stale commit_queue
+            // entry so it doesn't linger forever.
+            self.commit_queue
+                .remove_by_key(commit_message.client_id, commit_message.command_id);
         }
-
-            // If server is leader he will just ignore this (his commit queue is empty)
-        }
+        // If server is leader his commit queue is empty; this is a no-op.
+    }
         
 
     fn flush_safe_to_commit_commands(&mut self) {
@@ -460,19 +504,28 @@ impl OmniPaxosServer {
                 ProxyMessage::AbortFastPath(dom_message) => {
                     if let Some((leader_id, _)) = self.omnipaxos.get_current_leader() {
                         if self.id == leader_id {
-                            if self.config.local.use_proxy {
-                                if let ClientMessage::Append(command_id, _) = &dom_message.message {
-                                    self.proxy_command_ids
-                                        .insert((dom_message.client_id, *command_id));
+                            if let ClientMessage::Append(command_id, _) = &dom_message.message {
+                                let key = (dom_message.client_id, *command_id);
+                                // RC4: if the leader already executed this command via the
+                                // fast-path, ignore the late abort to prevent double-apply.
+                                if self.fast_path_executed.contains(&key) {
+                                    debug!(
+                                        "{}: fast path abort ignored — command already executed (client_id={}, command_id={})",
+                                        self.id, dom_message.client_id, command_id
+                                    );
+                                } else {
+                                    if self.config.local.use_proxy {
+                                        self.proxy_command_ids.insert(key);
+                                    }
+                                    debug!(
+                                        "{}: fast path aborted — adding to slow-path buffer (client_id={}, command_id={})",
+                                        self.id,
+                                        dom_message.client_id,
+                                        dom_message.message.command_id()
+                                    );
+                                    self.dom.push_to_late_buffer(dom_message);
                                 }
                             }
-                            debug!(
-                                "{}: fast path aborted — adding to slow-path buffer (client_id={}, command_id={})",
-                                self.id,
-                                dom_message.client_id,
-                                dom_message.message.command_id()
-                            );
-                            self.dom.push_to_late_buffer(dom_message);
                         } else {
                             if let ClientMessage::Append(command_id, _) = &dom_message.message {
                                 self.commit_queue
