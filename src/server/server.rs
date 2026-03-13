@@ -182,7 +182,7 @@ impl OmniPaxosServer {
                     }
                 }, if deadline_sleep.is_some() => {
                     if !currently_failed {
-                        // RC2: drain any pending Paxos decisions BEFORE executing
+                        // drain any pending Paxos decisions BEFORE executing
                         // deadline commands so reads observe all committed writes.
                         self.handle_decided_entries();
                         let due = self.dom.handle_deadline();
