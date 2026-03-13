@@ -49,9 +49,8 @@ impl Proxy {
         let clock_config = config.clock.clone();
         let network = Network::new(listen_address, servers, NETWORK_BATCH_SIZE).await;
         
-        let n_replicas = config.targets().len() - 1;
-        let f = (n_replicas - 1) / 2;
         let n_servers = config.targets().len();
+        let f = n_servers.saturating_sub(1) / 2;
         let telemetry = TelemetryWriter::new(config.metrics_filepath.clone());
         let client_deadlines = HashMap::new();
         Self {

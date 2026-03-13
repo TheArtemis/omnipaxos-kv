@@ -1,20 +1,25 @@
 location = "local-2"
 server_id = 2
-num_clients = 1 # Hardcoded number of client connections to wait for
+num_clients = 0 # No direct clients; traffic only via proxy
 listen_address = "127.0.0.1"
 listen_port = 8002
 proxy_address = "127.0.0.1:9000"
 use_proxy = true
-adaptive_deadline = false
+adaptive_deadline = true
 default_deadline = 1000
-failure_injection = false
-failure_probability = 0.0
+failure_injection = true
+failure_probability = 0.2
 failure_check_interval_ms = 1000
-failure_downtime_ms = 0
-failure_max_events = 0
+failure_downtime_ms = 3000
+failure_max_events = 1
 output_filepath = "./logs/server-2.json"
 
+[owd]
+default_value = 1000
+percentile = 0.95
+window_size = 1000
+
 [clock]
-drift_rate = 500
+drift_rate = 0
 uncertainty_bound = 1000
 sync_freq = 100

@@ -1,6 +1,7 @@
 use crate::{configs::OmniPaxosKVConfig, database::Database, network::Network};
 use chrono::Utc;
 use log::*;
+use rand::Rng;
 use omnipaxos::{
     messages::Message,
     util::{LogEntry, NodeId},
@@ -95,30 +96,79 @@ impl OmniPaxosServer {
         stats_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut late_drain_interval = tokio::time::interval(LATE_BUFFER_DRAIN_INTERVAL);
         late_drain_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut failure_interval = tokio::time::interval(Duration::from_millis(
+            self.config.local.failure_check_interval_ms.max(1),
+        ));
+        failure_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut failed_until: Option<tokio::time::Instant> = None;
+        let mut injected_failures: u64 = 0;
         loop {
+            if let Some(until) = failed_until {
+                if tokio::time::Instant::now() >= until {
+                    failed_until = None;
+                    warn!("{}: simulated failure ended, server rejoined", self.id);
+                }
+            }
+            let currently_failed = failed_until.is_some();
+
             // Compute when the next deadline is
             let duration = self.dom.duration_until_next_deadline();
             let mut deadline_sleep = duration.map(|d| Box::pin(tokio::time::sleep(d)));
             tokio::select! {
                 _ = election_interval.tick() => {
-                    self.omnipaxos.tick();
-                    self.send_outgoing_msgs();
+                    if !currently_failed {
+                        self.omnipaxos.tick();
+                        self.send_outgoing_msgs();
+                    }
                 },
                 _ = late_drain_interval.tick() => {
-                    self.drain_late_buffer();
-                    self.send_outgoing_msgs();
+                    if !currently_failed {
+                        self.drain_late_buffer();
+                        self.send_outgoing_msgs();
+                    }
+                },
+                _ = failure_interval.tick(), if self.failure_injection_enabled() => {
+                    if !currently_failed
+                        && self.can_inject_more_failures(injected_failures)
+                        && self.should_halt_now()
+                    {
+                        error!(
+                            "{}: failure injection triggered, server unavailable for {} ms (p={:.4})",
+                            self.id,
+                            self.config.local.failure_downtime_ms,
+                            self.config.local.failure_probability
+                        );
+                        injected_failures = injected_failures.saturating_add(1);
+                        self.flush_stats();
+                        failed_until = Some(
+                            tokio::time::Instant::now()
+                                + Duration::from_millis(self.config.local.failure_downtime_ms.max(1)),
+                        );
+                    }
                 },
                 _ = stats_interval.tick() => {
                     self.flush_stats();
                 },
                 _ = self.network.cluster_messages.recv_many(&mut cluster_msg_buf, NETWORK_BATCH_SIZE) => {
-                    self.handle_cluster_messages(&mut cluster_msg_buf).await;
+                    if currently_failed {
+                        cluster_msg_buf.clear();
+                    } else {
+                        self.handle_cluster_messages(&mut cluster_msg_buf).await;
+                    }
                 },
                 _ = self.network.client_messages.recv_many(&mut client_msg_buf, NETWORK_BATCH_SIZE) => {
-                    self.handle_client_messages(&mut client_msg_buf).await;
+                    if currently_failed {
+                        client_msg_buf.clear();
+                    } else {
+                        self.handle_client_messages(&mut client_msg_buf).await;
+                    }
                 },
                 _ = self.network.proxy_messages.recv_many(&mut proxy_msg_buf, NETWORK_BATCH_SIZE) => {
-                    self.handle_proxy_messages(&mut proxy_msg_buf).await;
+                    if currently_failed {
+                        proxy_msg_buf.clear();
+                    } else {
+                        self.handle_proxy_messages(&mut proxy_msg_buf).await;
+                    }
                 },                
                 _ = async {
                     match &mut deadline_sleep {
@@ -126,36 +176,60 @@ impl OmniPaxosServer {
                         None => std::future::pending::<()>().await,
                     }
                 }, if deadline_sleep.is_some() => {
-                    let due = self.dom.handle_deadline();
-                    for msg in due {
-                        match msg.message {
-                            ClientMessage::Append(command_id, kv_command) => {
-                                debug!("{}: early path — processing message (client_id={}, command_id={})", self.id, msg.client_id, command_id);
-                                let command = Command {
-                                    client_id: msg.client_id,
-                                    coordinator_id: self.id,
-                                    id: command_id,
-                                    kv_cmd: kv_command,
-                                };
+                    if !currently_failed {
+                        let due = self.dom.handle_deadline();
+                        for msg in due {
+                            match msg.message {
+                                ClientMessage::Append(command_id, kv_command) => {
+                                    debug!("{}: early path — processing message (client_id={}, command_id={})", self.id, msg.client_id, command_id);
+                                    let command = Command {
+                                        client_id: msg.client_id,
+                                        coordinator_id: self.id,
+                                        id: command_id,
+                                        kv_cmd: kv_command,
+                                    };
 
-                                // If we are the leader, update the database and respond with a fast reply
-                                if self.id == self.omnipaxos.get_current_leader().unwrap().0 {
-                                    self.update_database_and_respond_fast(command);
-                                } else {
-                                    // If we are a follower we just respond with a fast reply
-                                    // We append the command to the command buffer to be committed later
-                                    // We need to ensure that we will add the commands in order
-                                    self.respond_fast(command);
+                                    // If we are the leader, update the database and respond with a fast reply
+                                    if self.id == self.omnipaxos.get_current_leader().unwrap().0 {
+                                        self.update_database_and_respond_fast(command);
+                                    } else {
+                                        // If we are a follower we just respond with a fast reply
+                                        // We append the command to the command buffer to be committed later
+                                        // We need to ensure that we will add the commands in order
+                                        self.respond_fast(command);
+                                    }
                                 }
                             }
                         }
+                        self.send_outgoing_msgs();
                     }
-                    self.send_outgoing_msgs();
                 },
             }
 
-           self.flush_safe_to_commit_commands();
+            if failed_until.is_none() {
+                self.flush_safe_to_commit_commands();
+            }
         }
+    }
+
+    fn should_halt_now(&self) -> bool {
+        let p = self.config.local.failure_probability;
+        if p <= 0.0 {
+            return false;
+        }
+        if p >= 1.0 {
+            return true;
+        }
+        rand::thread_rng().gen_bool(p)
+    }
+
+    fn failure_injection_enabled(&self) -> bool {
+        self.config.local.failure_injection || self.config.local.failure_probability > 0.0
+    }
+
+    fn can_inject_more_failures(&self, injected_failures: u64) -> bool {
+        let max_events = self.config.local.failure_max_events;
+        max_events == 0 || injected_failures < max_events
     }
     
 
