@@ -342,7 +342,7 @@ impl Proxy {
 
         // OmniPaxos already decided this entry (majority agreed); we only need the leader's result.
         if let Some(result) = state.result.take() {
-            // RC4 (proxy side): if the fast-path already committed this request,
+            // if the fast-path already committed this request,
             // `pending` will have been cleared by `reply_to_client`.  Sending a
             // second response would violate linearizability, so we discard it.
             if !self.pending.contains_key(&key) {
