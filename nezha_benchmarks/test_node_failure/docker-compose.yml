@@ -13,9 +13,9 @@ services:
   s1:
     image: omnipaxos-server
     build:
-      context: ./..
+      context: ../..
       dockerfile: server.dockerfile
-    container_name: s1
+    container_name: s1_nf
     environment:
       <<: *common-server-variables
     volumes:
@@ -24,7 +24,7 @@ services:
       - ./logs/:/app/logs/
   s2:
     image: omnipaxos-server
-    container_name: s2
+    container_name: s2_nf
     environment:
       <<: *common-server-variables
     volumes:
@@ -33,7 +33,7 @@ services:
       - ./logs/:/app/logs/
   s3:
     image: omnipaxos-server
-    container_name: s3
+    container_name: s3_nf
     environment:
       <<: *common-server-variables
     volumes:
@@ -43,9 +43,9 @@ services:
   proxy:
     image: omnipaxos-proxy
     build:
-      context: ./..
+      context: ../..
       dockerfile: proxy.dockerfile
-    container_name: p0
+    container_name: p0_nf
     environment:
       RUST_LOG: "${RUST_LOG:-debug}"
       PROXY_CONFIG_FILE: "/app/proxy-config.toml"
@@ -58,9 +58,9 @@ services:
   c1:
     image: omnipaxos-client
     build:
-      context: ./..
+      context: ../..
       dockerfile: client.dockerfile
-    container_name: c1
+    container_name: c1_nf
     depends_on:
       - proxy
     environment:
@@ -76,7 +76,7 @@ services:
       - ./logs/:/app/logs/
   c2:
     image: omnipaxos-client
-    container_name: c2
+    container_name: c2_nf
     depends_on:
       - proxy
     environment:
