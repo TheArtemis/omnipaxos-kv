@@ -170,18 +170,34 @@ impl Client {
     }
 
     fn handle_server_message(&mut self, msg: ServerMessage) {
-        //debug!("Received {msg:?}");
         match msg {
             ServerMessage::StartSignal(_) => (),
-            server_response => {
-                let cmd_id = server_response.command_id();
-                self.client_data.new_response(cmd_id);
+            ServerMessage::Read(cmd_id, value) => {
+                self.client_data.new_response(cmd_id, value);
+            }
+            ServerMessage::Write(cmd_id) => {
+                self.client_data.new_response(cmd_id, None);
+            }
+            ServerMessage::FastReply(fr) => {
+                let value = fr.result.and_then(|r| match r {
+                    ServerResult::Read(_, v) => v,
+                    ServerResult::Write(_) => None,
+                });
+                self.client_data.new_response(fr.request_id, value);
+            }
+            ServerMessage::SlowPathReply(sr) => {
+                let value = sr.result.and_then(|r| match r {
+                    ServerResult::Read(_, v) => v,
+                    ServerResult::Write(_) => None,
+                });
+                self.client_data.new_response(sr.request_id, value);
             }
         }
     }
 
     async fn send_request(&mut self, is_write: bool) {
         let key = self.next_request_id.to_string();
+        let write_value = if is_write { Some(key.clone()) } else { None };
         let cmd = match is_write {
             true => KVCommand::Put(key.clone(), key.clone()),
             false => KVCommand::Get(key.clone()),
@@ -199,10 +215,8 @@ impl Client {
         } else {
             self.server_network.send(self.active_server, request).await;
         }
-        
 
-        // Update client data
-        self.client_data.new_request(is_write);
+        self.client_data.new_request(is_write, key, write_value);
         self.next_request_id += 1
     }
 
@@ -235,7 +249,21 @@ impl Client {
         self.client_data.save_summary(self.config.clone())?;
         self.client_data
             .to_csv(self.config.output_filepath.clone())?;
-        
+        let history_path = self.config.summary_filepath.replace("client-", "history-");
+        let client_id = self.config.summary_filepath
+            .chars()
+            .rev()
+            .skip(5) // skip ".json"
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect::<String>()
+            .parse::<u64>()
+            .unwrap_or(self.id as u64);
+        if let Err(e) = self.client_data.save_history(&history_path, client_id) {
+            log::warn!("Failed to write history file {}: {}", history_path, e);
+        }
         Ok(())
     }
 }
