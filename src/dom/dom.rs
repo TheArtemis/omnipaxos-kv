@@ -104,9 +104,7 @@ impl Dom {
     }
 
     pub fn push_by_deadline(&mut self, message: DomMessage) {
-        let now = self.clock.get_time();
-        let uncertainty = self.clock.get_uncertainty() as u64;
-        if message.deadline > now + uncertainty {
+        if message.deadline > self.last_released_command {
             self.push_to_early_buffer(message);
         } else {
             self.push_to_late_buffer(message);
