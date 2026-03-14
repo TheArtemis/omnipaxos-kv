@@ -66,3 +66,6 @@ Temporary Items
 # Verifier
 */examples/*.html
 */examples/merged-history.json
+
+*/verfier
+verifier/*
