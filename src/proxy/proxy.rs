@@ -224,7 +224,7 @@ impl Proxy {
         let mut any_sent = false;
         for server in self.config.targets() {
             debug!(
-                "Fast path timeout for client {} command {}, sending slow-path abort to server {}",
+                "Fast path abort for client {} command {}, sending slow-path abort to server {}",
                 abort_msg.client_id, abort_msg.message.command_id(), server.id
             );
             self.network
@@ -234,7 +234,7 @@ impl Proxy {
         }
         if !any_sent {
             warn!(
-                "Fast path timeout for client {} command {}, but no servers configured to receive abort",
+                "Fast path abort for client {} command {}, but no servers configured to receive abort",
                 abort_msg.client_id, abort_msg.message.command_id()
             );
         }
@@ -399,7 +399,7 @@ impl Proxy {
 
         if self.is_super_quorum(key) {
             if !self.logs_consistent(key) {
-                warn!(
+                debug!(
                     "Fast path: super quorum for {:?} but replicas have inconsistent log hashes, not committing",
                     key
                 );
@@ -414,6 +414,13 @@ impl Proxy {
                 // debug!("Log for {:?}: {:?}", key, self.reply_sets.get(&key).unwrap().replies);
                 return Some(leader);
             }
+        } else {
+            debug!(
+                "Not enough replies to commit {:?}: have {}, need {}",
+                key,
+                self.reply_sets.get(&key).map_or(0, |s| s.replies.len()),
+                self.get_super_quorum_size()
+            );
         }
         None
     }   
