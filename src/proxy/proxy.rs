@@ -99,7 +99,7 @@ impl Proxy {
         let mut metrics_flush_interval = tokio::time::interval_at(start, std::time::Duration::from_secs(1));
         metrics_flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let continuous_telemetry = self.config.telemetry == TelemetryMode::Yes;
-        let mut fast_path_timeout_interval = tokio::time::interval(std::time::Duration::from_millis(1));
+        let mut fast_path_timeout_interval = tokio::time::interval(std::time::Duration::from_millis(5));
         fast_path_timeout_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
@@ -204,7 +204,7 @@ impl Proxy {
             Some(t) => *t,
             None => return false,
         };
-        now >= timeout_at
+        now >= timeout_at.saturating_add(self.clock.get_uncertainty() as u64)
     }
 
     async fn abort_fast_path(&mut self, key: ClientRequestKey) {
