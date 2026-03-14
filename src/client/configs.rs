@@ -15,12 +15,20 @@ pub struct ClientConfig {
     pub sync_time: Option<Timestamp>,
     pub summary_filepath: String,
     pub output_filepath: String,
-    #[cfg(feature = "correctness-check")]
     #[serde(default)]
     pub history_output_path: Option<String>,
 }
 
 impl ClientConfig {
+    /// Client identity for logging and operation history. Parses the number after the last dash in `location` (e.g. "local-1" -> 1). Falls back to 1 if missing or invalid.
+    pub fn client_id_from_location(&self) -> u64 {
+        self.location
+            .rsplit('-')
+            .next()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(1)
+    }
+
     pub fn new() -> Result<Self, ConfigError> {
         let config_file = match env::var("CONFIG_FILE") {
             Ok(file_path) => file_path,

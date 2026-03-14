@@ -32,20 +32,25 @@ func ProcessHistory(historyPath string) HistoryResult {
 	model := createKVModel()
 	result, info := porcupine.CheckOperationsVerbose(model, history, 30*time.Second)
 
-	// Calculate max partial linearization length
-	maxPartialLength := calculateMaxPartialLength(info)
+	totalOps := len(history)
+	// Max partial length: when linearizable the full history is the linearization.
+	// When not, PartialLinearizations() is per-partition (per key), so we take max over partitions (best single-key run).
+	maxPartialLength := totalOps
+	if result != porcupine.Ok {
+		maxPartialLength = calculateMaxPartialLength(info)
+	}
 
 	// Generate visualization
 	htmlPath := generateVisualization(historyPath, model, info)
 
 	// Print results
-	printResults(result, len(history), maxPartialLength)
+	printResults(result, totalOps, maxPartialLength)
 
 	return HistoryResult{
 		Path:           historyPath,
 		HTMLPath:       htmlPath,
 		IsLinearizable: result == porcupine.Ok,
-		TotalOps:       len(history),
+		TotalOps:       totalOps,
 		MaxPartialLen:  maxPartialLength,
 		Result:         result,
 	}
@@ -92,7 +97,8 @@ func printResults(result porcupine.CheckResult, totalOps int, maxPartialLength i
 	if isLinearizable {
 		fmt.Println(Colorize("  ✅ History is linearizable", ColorGreen))
 		fmt.Printf("%s\n", Colorize(fmt.Sprintf("  🧮 Total operations: %d", totalOps), ColorGreen))
-		if maxPartialLength > 0 {
+		// When linearizable, max partial length equals total ops; only show when it adds context (e.g. merged multi-file)
+		if maxPartialLength > 0 && maxPartialLength != totalOps {
 			fmt.Printf("%s\n", Colorize(fmt.Sprintf("  📌 Max partial linearization length: %d", maxPartialLength), ColorGreen))
 		}
 	} else {

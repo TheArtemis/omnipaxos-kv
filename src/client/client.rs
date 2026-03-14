@@ -6,7 +6,6 @@ use rand::Rng;
 use std::time::Duration;
 use tokio::time::interval;
 
-#[cfg(feature = "correctness-check")]
 use omnipaxos_kv::correctness::operation_history::{Input, Output};
 
 const NETWORK_BATCH_SIZE: usize = 100;
@@ -20,7 +19,6 @@ pub struct Client {
     active_server: NodeId,
     final_request_count: Option<usize>,
     next_request_id: usize,
-    #[cfg(feature = "correctness-check")]
     operation_indices: std::collections::HashMap<CommandId, usize>, // Map command_id to operation_index
 }
 
@@ -40,19 +38,16 @@ impl Client {
         } else {
             None
         };
+        let client_id = config.client_id_from_location() as ClientId;
         Client {
-            id: config.server_id,
+            id: client_id,
             server_network,
             proxy_network,
-            #[cfg(feature = "correctness-check")]
-            client_data: ClientData::new_with_correctness(config.server_id),
-            #[cfg(not(feature = "correctness-check"))]
-            client_data: ClientData::new(),
+            client_data: ClientData::new_with_correctness(client_id),
             active_server: config.server_id,
             config,
             final_request_count: None,
             next_request_id: 0,
-            #[cfg(feature = "correctness-check")]
             operation_indices: std::collections::HashMap::new(),
         }
     }
@@ -76,12 +71,9 @@ impl Client {
         match start_time {
             Some(ServerMessage::StartSignal(start_time)) => {
                 Self::wait_until_sync_time(&mut self.config, start_time).await;
-                #[cfg(feature = "correctness-check")]
-                {
-                    // Set sync time for correctness tracking after waiting
-                    // This ensures all clients use the same reference point (the actual scheduled start instant)
-                    self.client_data.set_sync_time(start_time);
-                }
+                // Set sync time for correctness tracking after waiting
+                // This ensures all clients use the same reference point (the actual scheduled start instant)
+                self.client_data.set_sync_time(start_time);
             }
             _ => panic!("Error waiting for start signal"),
         }
@@ -192,26 +184,23 @@ impl Client {
             server_response => {
                 let cmd_id = server_response.command_id();
                 self.client_data.new_response(cmd_id);
-                
-                #[cfg(feature = "correctness-check")]
-                {
-                    if let Some(&op_index) = self.operation_indices.get(&cmd_id) {
-                        let output = match &server_response {
-                            ServerMessage::Read(_, value) => Output {
-                                status: "ok".to_string(),
-                                value: value.clone(),
-                            },
-                            ServerMessage::Write(_) => Output {
-                                status: "ok".to_string(),
-                                value: None,
-                            },
-                            ServerMessage::StartSignal(_) => unreachable!(),
-                            ServerMessage::FastReply(_) => unreachable!(),
-                            ServerMessage::SlowPathReply(_) => unreachable!(),
-                        };
-                        self.client_data.complete_operation(op_index, output);
-                        self.operation_indices.remove(&cmd_id);
-                    }
+
+                if let Some(&op_index) = self.operation_indices.get(&cmd_id) {
+                    let output = match &server_response {
+                        ServerMessage::Read(_, value) => Output {
+                            status: "ok".to_string(),
+                            value: value.clone(),
+                        },
+                        ServerMessage::Write(_) => Output {
+                            status: "ok".to_string(),
+                            value: None,
+                        },
+                        ServerMessage::StartSignal(_) => unreachable!(),
+                        ServerMessage::FastReply(_) => unreachable!(),
+                        ServerMessage::SlowPathReply(_) => unreachable!(),
+                    };
+                    self.client_data.complete_operation(op_index, output);
+                    self.operation_indices.remove(&cmd_id);
                 }
             }
         }
@@ -223,12 +212,9 @@ impl Client {
             true => KVCommand::Put(key.clone(), key.clone()),
             false => KVCommand::Get(key.clone()),
         };
-        
-        #[cfg(feature = "correctness-check")]
-        {
-            self.record_operation_for_cmd(&cmd);
-        }
-        
+
+        self.record_operation_for_cmd(&cmd);
+
         let request = ClientMessage::Append(self.next_request_id, cmd);
         debug!("Sending {request:?}");
 
@@ -248,7 +234,6 @@ impl Client {
         self.next_request_id += 1;
     }    
 
-    #[cfg(feature = "correctness-check")]
     fn record_operation_for_cmd(&mut self, cmd: &KVCommand) {
         let input = match cmd {
             KVCommand::Put(k, v) => Input::Put {
@@ -296,23 +281,18 @@ impl Client {
         self.client_data.save_summary(self.config.clone())?;
         self.client_data
             .to_csv(self.config.output_filepath.clone())?;
-        
-        #[cfg(feature = "correctness-check")]
-        {
-            self.export_history_json();
-        }
-        
+
+        self.export_history_json();
+
         Ok(())
     }
 
-    #[cfg(feature = "correctness-check")]
     fn export_history_json(&self) {
         let history_path = if let Some(ref path) = self.config.history_output_path {
             path.clone()
         } else {
-            // Default to logs directory with client ID
-            // Since logs/ is mounted, write directly there
-            format!("/app/logs/history-{}.json", self.id)
+            // Default to logs directory with a unique per-client name (location distinguishes clients that share server_id)
+            format!("/app/logs/history-{}.json", self.config.location)
         };
         if let Err(e) = self.client_data.export_history_json(&history_path) {
             warn!("Failed to export history JSON: {}", e);
