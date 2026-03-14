@@ -1,4 +1,4 @@
-use log::{debug, info, warn};
+use log::{debug, warn};
 
 use crate::clock::ClockSim;
 use crate::common::kv::{ClientId, NodeId};
@@ -300,12 +300,6 @@ impl Proxy {
         if let Some(leader_reply) = self.can_commit(key) {
             self.telemetry.record_fast_path_commit(client_id, request_id);
             self.reply_to_client(leader_reply, key);
-            // Will send the commit message to all servers
-            self.send_commit_message(CommitMessage {
-                client_id,
-                command_id: request_id,
-            })
-            .await;
         }
     }
     
@@ -437,15 +431,6 @@ impl Proxy {
         self.fast_path_deadlines.remove(&key);
         self.aborted_fast_path.remove(&key);
         self.network.send_to_client(client_id, msg);
-    }
-
-    async fn send_commit_message(&mut self, commit_message: CommitMessage) {
-        let targets = self.config.targets();
-        for server in targets {
-            self.network
-                .send_to_server(server.id, ProxyMessage::Commit(commit_message.clone()))
-                .await;
-        }
     }
 
     fn update_client_deadline(&mut self, replica_id: NodeId, d: u64) -> Option<u64> {
