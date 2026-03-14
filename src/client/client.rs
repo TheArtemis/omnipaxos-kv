@@ -220,7 +220,6 @@ impl Client {
                     self.operation_indices.remove(&sr.request_id);
                 }
             }
-            }
         }
     }
 
