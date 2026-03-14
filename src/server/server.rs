@@ -187,6 +187,7 @@ impl OmniPaxosServer {
                         self.handle_decided_entries();
                         let due = self.dom.handle_deadline();
                         for msg in due {
+                            let arrival_hash = msg.arrival_hash.clone();
                             match msg.message {
                                 ClientMessage::Append(command_id, kv_command) => {
                                     debug!("{}: early path — processing message (client_id={}, command_id={})", self.id, msg.client_id, command_id);
@@ -197,14 +198,13 @@ impl OmniPaxosServer {
                                         kv_cmd: kv_command,
                                     };
 
-                                    // If we are the leader, update the database and respond with a fast reply
                                     if self.id == self.omnipaxos.get_current_leader().unwrap().0 {
-                                        self.update_database_and_respond_fast(command);
+                                        self.update_database_and_respond_fast(command, arrival_hash);
                                     } else {
                                         // If we are a follower we just respond with a fast reply
                                         // We append the command to the command buffer to be committed later
                                         // We need to ensure that we will add the commands in order
-                                        self.respond_fast(command);
+                                        self.respond_fast(command, arrival_hash);
                                     }
                                 }
                             }
@@ -355,7 +355,7 @@ impl OmniPaxosServer {
         }
     }
 
-    fn update_database_and_respond_fast(&mut self, command: Command) {
+    fn update_database_and_respond_fast(&mut self, command: Command, arrival_hash: LogHash) {
         // Clone kv_cmd so we can both apply it to the DB and append the full
         // Command to the Paxos log for durability (RC1).
         let read = self.database.handle_command(command.kv_cmd.clone());
@@ -370,7 +370,7 @@ impl OmniPaxosServer {
                 Some(read_result) => Some(ServerResult::Read(command.id, read_result)),
                 None => Some(ServerResult::Write(command.id)),
             },
-            hash: self.log_hash.clone(),
+            hash: arrival_hash,
             deadline_length,
         };
 
@@ -395,7 +395,7 @@ impl OmniPaxosServer {
     }
 
     // Replicas just respond with a fast reply without updating the database
-    fn respond_fast(&mut self, command: Command) {
+    fn respond_fast(&mut self, command: Command, arrival_hash: LogHash) {
         let ballot = self.omnipaxos.get_promise();
         let deadline_length = self.compute_deadline_length();
         let fast_reply = FastReply {
@@ -404,7 +404,8 @@ impl OmniPaxosServer {
             client_id: command.client_id,
             request_id: command.id,
             result: None,
-            hash: self.log_hash.clone(),
+            // Use arrival-time snapshot for the same reason as the leader path.
+            hash: arrival_hash,
             deadline_length,
         };
 
@@ -487,7 +488,7 @@ impl OmniPaxosServer {
     async fn handle_proxy_messages(&mut self, messages: &mut Vec<ProxyMessage>) {
         for proxy_msg in messages.drain(..) {
             match proxy_msg {
-                ProxyMessage::Append(dom_message) => {
+                ProxyMessage::Append(mut dom_message) => {
                     if self.config.local.use_proxy {
                         match &dom_message.message {
                             ClientMessage::Append(command_id, _) => {
@@ -496,7 +497,8 @@ impl OmniPaxosServer {
                             }
                         }
                     }
-                    let message_passing_delay = self.dom.get_time() - dom_message.send_time;
+                    dom_message.arrival_hash = self.log_hash.clone();
+                    let message_passing_delay = self.dom.get_time() - dom_message.send_time; // TODO: what about uncertainty here?
                     self.dom
                         .add_element_to_owd(DEFAULT_NODE_ID, message_passing_delay);
                     self.dom.push_by_deadline(dom_message);
@@ -506,7 +508,7 @@ impl OmniPaxosServer {
                         if self.id == leader_id {
                             if let ClientMessage::Append(command_id, _) = &dom_message.message {
                                 let key = (dom_message.client_id, *command_id);
-                                // RC4: if the leader already executed this command via the
+                                // if the leader already executed this command via the
                                 // fast-path, ignore the late abort to prevent double-apply.
                                 if self.fast_path_executed.contains(&key) {
                                     debug!(
