@@ -15,6 +15,6 @@ failure_max_events = 0
 output_filepath = "./logs/server-1.json"
 
 [clock]
-drift_rate = 0
+drift_rate = 30
 uncertainty_bound = 1000
-sync_freq = 10
+sync_freq = 100
