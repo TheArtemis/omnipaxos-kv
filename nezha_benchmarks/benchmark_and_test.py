@@ -14,7 +14,7 @@ Positional argument
 Options
     --check-only       Skip docker compose; only analyse existing logs/
     --run-only         Run docker compose but skip the analysis step
-    --timeout N        Seconds to wait for client containers to finish (default 120)
+    --timeout N        Seconds to wait for client containers to finish (default 60)
     --log-level LEVEL  RUST_LOG level passed to docker containers (default: info)
     --no-plots         Skip matplotlib plots even if matplotlib is available
 """
@@ -511,8 +511,8 @@ def main() -> None:
     parser.add_argument(
         "--timeout",
         type=int,
-        default=120,
-        help="Seconds to wait for client containers before forcing shutdown (default: 120)",
+        default=60,
+        help="Seconds to wait for client containers before forcing shutdown (default: 60)",
     )
     parser.add_argument(
         "--log-level",
