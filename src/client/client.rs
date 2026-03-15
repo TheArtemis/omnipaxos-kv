@@ -88,6 +88,10 @@ impl Client {
 
         // Main event loop
         info!("{}: Starting requests", self.id);
+        // Initialized once when all requests have been sent; fires after a
+        // grace period so we don't hang forever waiting for straggler responses.
+        let mut drain_sleep: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
+        const DRAIN_TIMEOUT: Duration = Duration::from_secs(15);
         loop {
             if self.config.use_proxy {
                 tokio::select! {
@@ -116,12 +120,26 @@ impl Client {
                                 request_interval = interval(new_interval.get_request_delay());
                             },
                             None => {
+                                if drain_sleep.is_none() {
+                                    drain_sleep = Some(Box::pin(tokio::time::sleep(DRAIN_TIMEOUT)));
+                                }
                                 self.final_request_count = Some(self.client_data.request_count());
                                 if self.run_finished() {
                                     break;
                                 }
                             },
                         }
+                    },
+                    _ = async {
+                        match &mut drain_sleep {
+                            Some(s) => s.as_mut().await,
+                            None => std::future::pending::<()>().await,
+                        }
+                    }, if drain_sleep.is_some() => {
+                        warn!("{}: drain timeout — {} of {} responses received; saving partial results",
+                            self.id, self.client_data.response_count(),
+                            self.final_request_count.unwrap_or(0));
+                        break;
                     },
                 }
             } else {
@@ -146,12 +164,26 @@ impl Client {
                                 request_interval = interval(new_interval.get_request_delay());
                             },
                             None => {
+                                if drain_sleep.is_none() {
+                                    drain_sleep = Some(Box::pin(tokio::time::sleep(DRAIN_TIMEOUT)));
+                                }
                                 self.final_request_count = Some(self.client_data.request_count());
                                 if self.run_finished() {
                                     break;
                                 }
                             },
                         }
+                    },
+                    _ = async {
+                        match &mut drain_sleep {
+                            Some(s) => s.as_mut().await,
+                            None => std::future::pending::<()>().await,
+                        }
+                    }, if drain_sleep.is_some() => {
+                        warn!("{}: drain timeout — {} of {} responses received; saving partial results",
+                            self.id, self.client_data.response_count(),
+                            self.final_request_count.unwrap_or(0));
+                        break;
                     },
                 }
             }

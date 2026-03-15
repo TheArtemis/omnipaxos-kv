@@ -99,6 +99,8 @@ impl Proxy {
         let mut metrics_flush_interval = tokio::time::interval_at(start, std::time::Duration::from_secs(1));
         metrics_flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let continuous_telemetry = self.config.telemetry == TelemetryMode::Yes;
+        let mut fast_path_abort_interval = tokio::time::interval(std::time::Duration::from_millis(2000));
+        fast_path_abort_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 _ = self.network.client_messages.recv_many(&mut client_msg_buf, NETWORK_BATCH_SIZE) => {
@@ -106,6 +108,14 @@ impl Proxy {
                 },
                 _ = self.network.server_messages.recv_many(&mut server_msg_buf, NETWORK_BATCH_SIZE) => {
                     self.handle_server_messages(&mut server_msg_buf).await;
+                },
+                _ = fast_path_abort_interval.tick() => {
+                    let keys: Vec<_> = self.fast_path_deadlines.keys().cloned().collect();
+                    for key in keys {
+                        if self.should_abort_fast_path(key) {
+                            self.abort_fast_path(key).await;
+                        }
+                    }
                 },
                 _ = metrics_flush_interval.tick(), if continuous_telemetry => {
                     self.flush_metrics();

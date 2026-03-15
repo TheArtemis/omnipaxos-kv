@@ -332,6 +332,29 @@ impl OmniPaxosServer {
                 }
             } else {
                 if self.fast_path_executed.remove(&key) {
+                    // The fast-path already applied the command and sent a FastReply.
+                    // If the proxy subsequently aborted the fast-path (e.g., hash
+                    // inconsistency), it is still waiting for a slow-path reply.
+                    // Send one from the coordinator; the proxy discards it silently
+                    // if the fast-path already committed (key no longer in `pending`).
+                    if command.coordinator_id == self.id {
+                        let result = match &command.kv_cmd {
+                            KVCommand::Put(_, _) => ServerResult::Write(command.id),
+                            _ => {
+                                let read = self.database.handle_command(command.kv_cmd.clone());
+                                ServerResult::Read(command.id, read.flatten())
+                            }
+                        };
+                        let deadline_length = self.compute_deadline_length();
+                        let reply = SlowPathReply {
+                            replica_id: self.id,
+                            client_id: command.client_id,
+                            request_id: command.id,
+                            result: Some(result),
+                            deadline_length,
+                        };
+                        self.network.send_to_proxy(ServerMessage::SlowPathReply(reply));
+                    }
                 } else {
                     let read = self.database.handle_command(command.kv_cmd);
                     if command.coordinator_id == self.id {
