@@ -3,7 +3,6 @@ use crate::common::kv::{ClientId, CommandId};
 use crate::dom::config::DomConfig;
 use crate::dom::request::DomMessage;
 use crate::owd::owd::Owd;
-use log::debug;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::time::Duration;
@@ -105,9 +104,7 @@ impl Dom {
     }
 
     pub fn push_by_deadline(&mut self, message: DomMessage) {
-        let now = self.clock.get_time();
-        let uncertainty = self.clock.get_uncertainty() as u64;
-        if message.deadline > now + uncertainty {
+        if message.deadline > self.last_released_command {
             self.push_to_early_buffer(message);
         } else {
             self.push_to_late_buffer(message);
@@ -134,11 +131,12 @@ impl Dom {
 
 
     /// Returns how long to wait (real time) until the next deadline, or `None` if no deadline.
-    /// Caller should wake immediately when the returned duration is zero.
     pub fn duration_until_next_deadline(&mut self) -> Option<Duration> {
         let deadline = self.get_next_deadline()?;
         let now = self.clock.get_time();
-        let delta = deadline.saturating_sub(now);
+        let uncertainty = self.clock.get_uncertainty() as u64;
+        let target = deadline.saturating_add(uncertainty);
+        let delta = target.saturating_sub(now);
         Some(Duration::from_micros(delta))
     }
 
@@ -146,9 +144,10 @@ impl Dom {
     /// Caller is responsible for appending to the log and updating proxy_command_ids.
     pub fn handle_deadline(&mut self) -> Vec<DomMessage> {
         let now = self.clock.get_time();
+        let uncertainty = self.clock.get_uncertainty() as u64;
         let mut candidates = Vec::new();
         while let Some(Reverse(msg)) = self.early_buffer.peek() {
-            if msg.deadline > now {
+            if msg.deadline.saturating_add(uncertainty) > now {
                 break;
             }
             candidates.push(self.early_buffer.pop().unwrap().0);

@@ -1,0 +1,79 @@
+# Raw OmniPaxos benchmark: clients talk directly to the leader (no proxy, no fast-path).
+# Intended for latency and linearizability comparison against the proxy-based configs.
+#
+# NOTE: Build before running:
+#   docker compose build
+#   docker compose up
+
+x-common-server-variables: &common-server-variables
+  RUST_LOG: "info"
+  SERVER_CONFIG_FILE: "/app/server-config.toml"
+  CLUSTER_CONFIG_FILE: "/app/cluster-config.toml"
+  OMNIPAXOS_NODE_ADDRS: "s1:8000,s2:8000,s3:8000"
+  OMNIPAXOS_LISTEN_ADDRESS: "0.0.0.0"
+  OMNIPAXOS_LISTEN_PORT: 8000
+
+services:
+  s1:
+    image: omnipaxos-server
+    build:
+      context: ../..
+      dockerfile: server.dockerfile
+    environment:
+      <<: *common-server-variables
+    volumes:
+      - ./server-1-config.toml:/app/server-config.toml
+      - ./cluster-config.toml:/app/cluster-config.toml
+      - ./logs/:/app/logs/
+
+  s2:
+    image: omnipaxos-server
+    environment:
+      <<: *common-server-variables
+    volumes:
+      - ./server-2-config.toml:/app/server-config.toml
+      - ./cluster-config.toml:/app/cluster-config.toml
+      - ./logs/:/app/logs/
+
+  s3:
+    image: omnipaxos-server
+    environment:
+      <<: *common-server-variables
+    volumes:
+      - ./server-3-config.toml:/app/server-config.toml
+      - ./cluster-config.toml:/app/cluster-config.toml
+      - ./logs/:/app/logs/
+
+  c1:
+    image: omnipaxos-client
+    build:
+      context: ../..
+      dockerfile: client.dockerfile
+    depends_on:
+      - s1
+    environment:
+      RUST_LOG: "info"
+      CONFIG_FILE: "/app/client-config.toml"
+      CLUSTER_CONFIG_FILE: "/app/cluster-config.toml"
+      OMNIPAXOS_NODE_ADDRS: "s1:8000,s2:8000,s3:8000"
+      OMNIPAXOS_SERVER_ADDRESS: "s1:8000"
+      # OMNIPAXOS_PROXY_ADDRESS intentionally omitted — no proxy in this config
+    volumes:
+      - ./client-1-config.toml:/app/client-config.toml
+      - ./cluster-config.toml:/app/cluster-config.toml
+      - ./logs/:/app/logs/
+
+  c2:
+    image: omnipaxos-client
+    depends_on:
+      - s1
+    environment:
+      RUST_LOG: "info"
+      CONFIG_FILE: "/app/client-config.toml"
+      CLUSTER_CONFIG_FILE: "/app/cluster-config.toml"
+      OMNIPAXOS_NODE_ADDRS: "s1:8000,s2:8000,s3:8000"
+      OMNIPAXOS_SERVER_ADDRESS: "s1:8000"
+    volumes:
+      - ./client-2-config.toml:/app/client-config.toml
+      - ./cluster-config.toml:/app/cluster-config.toml
+      - ./logs/:/app/logs/

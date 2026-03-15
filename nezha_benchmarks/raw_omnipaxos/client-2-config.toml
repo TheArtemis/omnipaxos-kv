@@ -1,12 +1,12 @@
-location = "local-2"
-server_id = 1 # the server (leader) to connect to
+location = "raw-c2"
+server_id = 1          # connect directly to s1 (the leader)
 server_address = "127.0.0.1:8001"
-proxy_address = "127.0.0.1:9000"
-use_proxy = true
+proxy_address = "127.0.0.1:9000"   # unused; kept for config compatibility
+use_proxy = false
 summary_filepath = "./logs/client-2.json"
 output_filepath = "./logs/client-2.csv"
 
-# Defining TOML vector of (duration_sec, requests_per_sec, read_ratio) which determines the behavior of the client requests
+# Same workload as high_quality for a fair comparison
 [[requests]]
 duration_sec = 5
 requests_per_sec = 50

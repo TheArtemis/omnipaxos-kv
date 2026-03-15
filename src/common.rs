@@ -106,7 +106,6 @@ pub mod messages {
     
     #[derive(Clone, Debug, Serialize, Deserialize)]
     pub enum ProxyMessage {
-        Commit(CommitMessage),
         Append(DomMessage),
         AbortFastPath(DomMessage),
     }
