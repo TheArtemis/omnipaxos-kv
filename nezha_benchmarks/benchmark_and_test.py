@@ -225,12 +225,17 @@ def _check_key(key: str, ops: list[Operation]) -> tuple[bool, str]:
                         f"committed at t={p.return_ns:,} before Get started at t={g.call_ns:,}."
                     )
         else:
-            # Returned value rv must correspond to a committed Write.
-            valid_writes = [p for p in puts if p.write_val == rv and p.return_ns <= g.return_ns]
+            # Returned value rv must correspond to a write that could have been
+            # linearized before this Get.  Two operations can be ordered A before B
+            # iff A.call_ns ≤ B.return_ns (A started before B returned).  Using
+            # Put.return_ns ≤ Get.return_ns is too strict: it rejects valid
+            # concurrent executions where the Put's ack races the Get's ack but
+            # the write was committed (and visible) before the Get was served.
+            valid_writes = [p for p in puts if p.write_val == rv and p.call_ns <= g.return_ns]
             if not valid_writes:
                 return False, (
                     f"Key '{key}': Get by client {g.client_id} returned {rv!r}, "
-                    f"but no Put({rv!r}) committed before Get.return_ns={g.return_ns:,}."
+                    f"but no Put({rv!r}) started before Get.return_ns={g.return_ns:,}."
                 )
 
             # Check for mandatory overwrite: find the latest Put that finished
