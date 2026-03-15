@@ -164,8 +164,14 @@ def _container_exited(name: str) -> bool:
 # ── History loading ────────────────────────────────────────────────────────────
 
 def load_history(logs_dir: pathlib.Path) -> list[Operation]:
+    import re as _re
     ops: list[Operation] = []
-    for path in sorted(logs_dir.glob("history-*.json")):
+    # Only load canonical per-client files: history-1.json, history-2.json, …
+    # Ignore files with non-numeric suffixes (e.g. history-raw-c1.json from
+    # older runs) which would mix operations from different experiments.
+    _numeric_history = _re.compile(r"^history-\d+\.json$")
+    for path in sorted(p for p in logs_dir.glob("history-*.json")
+                       if _numeric_history.match(p.name)):
         try:
             with open(path) as f:
                 entries = json.load(f)
