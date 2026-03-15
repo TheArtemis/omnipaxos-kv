@@ -332,13 +332,15 @@ impl OmniPaxosServer {
                 }
             } else {
                 if self.fast_path_executed.remove(&key) {
-                } else if command.coordinator_id == self.id {
+                } else {
                     let read = self.database.handle_command(command.kv_cmd);
-                    let response = match read {
-                        Some(r) => ServerMessage::Read(command.id, r),
-                        None => ServerMessage::Write(command.id),
-                    };
-                    self.network.send_to_client(command.client_id, response);
+                    if command.coordinator_id == self.id {
+                        let response = match read {
+                            Some(r) => ServerMessage::Read(command.id, r),
+                            None => ServerMessage::Write(command.id),
+                        };
+                        self.network.send_to_client(command.client_id, response);
+                    }
                 }
             }
         }
