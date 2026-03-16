@@ -1,7 +1,9 @@
 % Project report for clock-assisted consensus in OmniPaxos-KV
 \documentclass{article}
+\usepackage[margin=1.2in]{geometry}
 \usepackage[utf8]{inputenc}
 \usepackage{graphicx}
+\usepackage{amsmath}
 \usepackage{url}
 
 \title{Clock-Assisted Consensus in OmniPaxos-KV with Nezha-style Deadline-Ordered Multicast}
@@ -11,6 +13,9 @@
 \begin{document}
 
 \maketitle
+
+\tableofcontents
+\vspace{1em}
 
 \section{Introduction}
 Large-scale distributed systems increasingly rely on consensus protocols to provide strongly consistent services over unreliable networks. Classical leader-based protocols such as Paxos and Raft guarantee linearizability but often pay a performance cost: every client operation typically requires at least two round trips to the leader, and network reordering or failures can further increase latency. Recent work on clock-assisted consensus, in particular the Nezha protocol, demonstrates that when nodes share tightly synchronized clocks, it becomes possible to speculatively process requests in deadline order and obtain a fast path that completes in effectively one round trip.
