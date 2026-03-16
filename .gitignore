@@ -1,6 +1,10 @@
 # PROJECT-SPECIFIC IGNORES
 logs/
 
+# LaTeX build artifacts
+*.aux
+*.log
+
 # GENERATED IGNORES
 # Created by https://www.toptal.com/developers/gitignore/api/rust
 # Edit at https://www.toptal.com/developers/gitignore?templates=rust
