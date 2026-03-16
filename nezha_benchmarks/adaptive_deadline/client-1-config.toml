@@ -14,5 +14,5 @@ read_ratio = 0.25
 
 [[requests]]
 duration_sec = 5
-requests_per_sec = 10
-read_ratio = 0.25
+requests_per_sec = 150
+read_ratio = 0.75
