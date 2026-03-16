@@ -17,4 +17,4 @@ output_filepath = "./logs/server-2.json"
 [clock]
 drift_rate = 0
 uncertainty_bound = 10
-sync_freq = 1
+sync_freq = 1000

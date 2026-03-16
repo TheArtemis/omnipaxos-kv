@@ -20,6 +20,6 @@ percentile = 0.95
 window_size = 1000
 
 [clock]
-drift_rate = 0
+drift_rate = 50
 uncertainty_bound = 1000
 sync_freq = 100

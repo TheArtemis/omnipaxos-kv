@@ -7,6 +7,6 @@ metrics_filepath = "./logs/metrics.json"
 telemetry = "no"
 
 [clock]
-drift_rate = 3
+drift_rate = 0
 uncertainty_bound = 100
-sync_freq = 10
+sync_freq = 100
