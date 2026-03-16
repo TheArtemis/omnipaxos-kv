@@ -55,9 +55,6 @@ class Operation:
     return_ns: int
     result_val: Optional[str]
 
-    def latency_ms(self) -> float:
-        return (self.return_ns - self.call_ns) / 1e6
-
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def detect_compose_cmd() -> list[str]:
@@ -284,6 +281,42 @@ def load_metrics(logs_dir: pathlib.Path) -> Optional[dict]:
     with open(path) as f:
         return json.load(f)
 
+
+def compute_history_rps(ops: list[Operation]) -> Optional[float]:
+    """Compute end-to-end throughput from operation history timestamps."""
+    if not ops:
+        return None
+    start_ns = min(op.call_ns for op in ops)
+    end_ns = max(op.return_ns for op in ops)
+    duration_ns = end_ns - start_ns
+    if duration_ns <= 0:
+        return None
+    return len(ops) / (duration_ns / 1e9)
+
+
+def compute_history_latencies_ms(ops: list[Operation]) -> tuple[list[float], list[float], list[float]]:
+    """Compute E2E latencies from history call/return timestamps."""
+    put_lats: list[float] = []
+    get_lats: list[float] = []
+    all_lats: list[float] = []
+
+    for op in ops:
+        # Guard against malformed histories where return can be earlier than call.
+        duration_ns = op.return_ns - op.call_ns
+        if duration_ns < 0:
+            continue
+        lat_ms = duration_ns / 1e6
+        all_lats.append(lat_ms)
+        if op.op_type == "Put":
+            put_lats.append(lat_ms)
+        elif op.op_type == "Get":
+            get_lats.append(lat_ms)
+
+    put_lats.sort()
+    get_lats.sort()
+    all_lats.sort()
+    return put_lats, get_lats, all_lats
+
 # ── Plotting ───────────────────────────────────────────────────────────────────
 
 def plot_results(
@@ -304,8 +337,7 @@ def plot_results(
     # ── Panel 1: Latency CDF ──────────────────────────────────────────────────
     ax = axes[0]
     ax.set_title("End-to-End Latency CDF")
-    put_lats = sorted(op.latency_ms() for op in ops if op.op_type == "Put")
-    get_lats = sorted(op.latency_ms() for op in ops if op.op_type == "Get")
+    put_lats, get_lats, all_lats = compute_history_latencies_ms(ops)
     for lats, label, color in [
         (put_lats, "Put (write)", "#2196F3"),
         (get_lats, "Get (read)", "#FF5722"),
@@ -327,7 +359,6 @@ def plot_results(
     # ── Panel 2: Latency histogram ────────────────────────────────────────────
     ax = axes[1]
     ax.set_title("Latency Distribution (histogram)")
-    all_lats = [op.latency_ms() for op in ops]
     if all_lats:
         bins = min(60, max(20, len(all_lats) // 20))
         ax.hist(put_lats, bins=bins, alpha=0.6, color="#2196F3", label="Put")
@@ -345,8 +376,11 @@ def plot_results(
         aborted = metrics.get("fast_path_aborted", 0)
         avg_fp_ms = metrics.get("avg_fast_path_latency_us", 0) / 1000.0
         avg_sp_ms = metrics.get("avg_slow_path_latency_us", 0) / 1000.0
-        tp = metrics.get("avg_throughput_rps", 0.0)
-        ax.set_title(f"Proxy metrics  |  throughput ≈ {tp:.0f} rps")
+        history_rps = compute_history_rps(ops)
+        throughput_label = (
+            f"throughput ≈ {history_rps:.0f} rps" if history_rps is not None else "throughput: n/a"
+        )
+        ax.set_title(f"Proxy metrics  |  {throughput_label}")
         bars = ax.bar(
             ["Fast-path", "Slow-path", "Aborted"],
             [fp, sp, aborted],
@@ -394,7 +428,7 @@ def print_summary(
 ) -> None:
     puts = [o for o in ops if o.op_type == "Put"]
     gets = [o for o in ops if o.op_type == "Get"]
-    lats = sorted(o.latency_ms() for o in ops)
+    _, _, lats = compute_history_latencies_ms(ops)
     n = len(lats)
 
     print(f"\n{'═' * 62}")
@@ -405,7 +439,12 @@ def print_summary(
         p50 = lats[int(0.50 * n)]
         p95 = lats[int(0.95 * n)]
         p99 = lats[min(int(0.99 * n), n - 1)]
-        print(f"  E2E latency p50/p95/p99 : {p50:.2f} ms / {p95:.2f} ms / {p99:.2f} ms")
+        print(
+            f"  E2E latency p50/p95/p99 : {p50:.2f} ms / {p95:.2f} ms / {p99:.2f} ms "
+            f"(from history call/return timestamps)"
+        )
+
+    history_rps = compute_history_rps(ops)
 
     if metrics:
         fp = metrics.get("fast_path_committed", 0)
@@ -414,15 +453,18 @@ def print_summary(
         aborted = metrics.get("fast_path_aborted", 0)
         avg_fp = metrics.get("avg_fast_path_latency_us", 0) / 1000
         avg_sp = metrics.get("avg_slow_path_latency_us", 0) / 1000
-        tp = metrics.get("avg_throughput_rps", 0)
         print(
             f"  Fast-path : {fp:6d} ops ({fp / tot * 100:.1f}%)  avg {avg_fp:.2f} ms "
             f"| aborted: {aborted}"
         )
         print(f"  Slow-path : {sp:6d} ops ({sp / tot * 100:.1f}%)  avg {avg_sp:.2f} ms")
-        print(f"  Throughput: {tp:.1f} rps")
     else:
         print("  Proxy metrics: not available (metrics.json missing)")
+
+    if history_rps is not None:
+        print(f"  Throughput: {history_rps:.1f} rps  (from history)")
+    else:
+        print("  Throughput: n/a  (insufficient history timestamps)")
 
     if not ops:
         print("  Linearizability: SKIPPED  (no history files found)")
@@ -492,6 +534,7 @@ def run_single(
         "config": config_name,
         "skipped": False,
         "ops": len(ops),
+        "history_rps": compute_history_rps(ops),
         "lin_ok": lin_ok,
         "violations": len(violations),
         "metrics": metrics,
@@ -587,8 +630,8 @@ def main() -> None:
                 continue
             lin = "✓ PASS" if r.get("lin_ok", True) else f"✗ FAIL ({r['violations']})"
             tp_str = ""
-            if r.get("metrics"):
-                tp_str = f"  tp≈{r['metrics'].get('avg_throughput_rps', 0):.0f}rps"
+            if r.get("history_rps") is not None:
+                tp_str = f"  tp≈{r['history_rps']:.0f}rps"
             print(f"  {r['config']:<30s}  {lin}  {r['ops']} ops{tp_str}")
         print(f"\nLinearizability: {passed}/{len(real)} passed")
         if passed < len(real):
