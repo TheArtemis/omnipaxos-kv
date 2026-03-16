@@ -390,13 +390,10 @@ impl PeerConnection {
         // Writer Actor
         let (message_tx, mut message_rx) = mpsc::unbounded_channel();
         let writer_task = tokio::spawn(async move {
-            let mut buffer = Vec::with_capacity(batch_size);
-            while message_rx.recv_many(&mut buffer, batch_size).await != 0 {
-                for msg in buffer.drain(..) {
-                    if let Err(err) = writer.feed(msg).await {
-                        error!("Couldn't send message to node {peer_id}: {err}");
-                        break;
-                    }
+            while let Some(msg) = message_rx.recv().await {
+                if let Err(err) = writer.feed(msg).await {
+                    error!("Couldn't send message to node {peer_id}: {err}");
+                    break;
                 }
                 if let Err(err) = writer.flush().await {
                     error!("Couldn't send message to node {peer_id}: {err}");
@@ -494,14 +491,11 @@ impl ProxyConnection {
 
         let (message_tx, mut message_rx) = mpsc::unbounded_channel();
         let writer_task = tokio::spawn(async move {
-            let mut buffer = Vec::with_capacity(batch_size);
-            while message_rx.recv_many(&mut buffer, batch_size).await != 0 {
-                for msg in buffer.drain(..) {
-                    if let Err(err) = writer.feed(msg).await {
-                        error!("Couldn't send message to proxy {proxy_id}: {err}");
-                        error!("Killing connection to proxy {proxy_id}");
-                        return;
-                    }
+            while let Some(msg) = message_rx.recv().await {
+                if let Err(err) = writer.feed(msg).await {
+                    error!("Couldn't send message to proxy {proxy_id}: {err}");
+                    error!("Killing connection to proxy {proxy_id}");
+                    return;
                 }
                 if let Err(err) = writer.flush().await {
                     error!("Couldn't send message to proxy {proxy_id}: {err}");
@@ -553,14 +547,11 @@ impl ClientConnection {
         // Writer Actor
         let (message_tx, mut message_rx) = mpsc::unbounded_channel();
         let writer_task = tokio::spawn(async move {
-            let mut buffer = Vec::with_capacity(batch_size);
-            while message_rx.recv_many(&mut buffer, batch_size).await != 0 {
-                for msg in buffer.drain(..) {
-                    if let Err(err) = writer.feed(msg).await {
-                        error!("Couldn't send message to client {client_id}: {err}");
-                        error!("Killing connection to client {client_id}");
-                        return;
-                    }
+            while let Some(msg) = message_rx.recv().await {
+                if let Err(err) = writer.feed(msg).await {
+                    error!("Couldn't send message to client {client_id}: {err}");
+                    error!("Killing connection to client {client_id}");
+                    return;
                 }
                 if let Err(err) = writer.flush().await {
                     error!("Couldn't send message to client {client_id}: {err}");
