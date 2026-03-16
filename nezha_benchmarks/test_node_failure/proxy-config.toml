@@ -11,4 +11,4 @@ telemetry = "yes"
 [clock]
 drift_rate = 50
 uncertainty_bound = 1000
-sync_freq = 500
+sync_freq = 100

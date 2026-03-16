@@ -1,0 +1,14 @@
+{
+  "nodes": {},
+  "total_sent": 362,
+  "fast_path_committed": 302,
+  "fast_path_aborted": 0,
+  "slow_path_committed": 60,
+  "fast_path_ratio": 0.8342541436464088,
+  "slow_path_ratio": 0.16574585635359115,
+  "avg_fast_path_latency_us": 3382.158940397351,
+  "avg_slow_path_latency_us": 3888.25,
+  "avg_total_latency": 3466.0414364640883,
+  "avg_throughput_rps": 17.91623491367776,
+  "max_owd_deadline": 1000
+}

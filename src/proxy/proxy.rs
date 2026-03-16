@@ -1,4 +1,4 @@
-use log::{debug, info, warn};
+use log::{debug, warn};
 
 use crate::clock::ClockSim;
 use crate::common::kv::{ClientId, NodeId};
@@ -99,8 +99,8 @@ impl Proxy {
         let mut metrics_flush_interval = tokio::time::interval_at(start, std::time::Duration::from_secs(1));
         metrics_flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let continuous_telemetry = self.config.telemetry == TelemetryMode::Yes;
-        let mut fast_path_timeout_interval = tokio::time::interval(std::time::Duration::from_millis(1));
-        fast_path_timeout_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut fast_path_abort_interval = tokio::time::interval(std::time::Duration::from_millis(2000));
+        fast_path_abort_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 _ = self.network.client_messages.recv_many(&mut client_msg_buf, NETWORK_BATCH_SIZE) => {
@@ -109,8 +109,13 @@ impl Proxy {
                 _ = self.network.server_messages.recv_many(&mut server_msg_buf, NETWORK_BATCH_SIZE) => {
                     self.handle_server_messages(&mut server_msg_buf).await;
                 },
-                _ = fast_path_timeout_interval.tick() => {
-                    self.handle_fast_path_timeouts().await;
+                _ = fast_path_abort_interval.tick() => {
+                    let keys: Vec<_> = self.fast_path_deadlines.keys().cloned().collect();
+                    for key in keys {
+                        if self.should_abort_fast_path(key) {
+                            self.abort_fast_path(key).await;
+                        }
+                    }
                 },
                 _ = metrics_flush_interval.tick(), if continuous_telemetry => {
                     self.flush_metrics();
@@ -184,7 +189,12 @@ impl Proxy {
     }
 
     fn get_deadline(&self, send_time: u64, adaptive_deadline: u64) -> u64 {
-        adaptive_deadline + send_time
+        // Incorporate the current clock uncertainty (ε) explicitly in the deadline,
+        // following the Nezha-style formula D = send_time + max_r \hat{OWD}_{s,r} + ε.
+        let epsilon = self.clock.get_uncertainty() as u64;
+        send_time
+            .saturating_add(adaptive_deadline)
+            .saturating_add(epsilon)
     }
 
     fn get_fast_path_timeout(&self, deadline: u64, adaptive_deadline: u64) -> u64 {
@@ -204,7 +214,7 @@ impl Proxy {
             Some(t) => *t,
             None => return false,
         };
-        now >= timeout_at
+        now >= timeout_at.saturating_add(self.clock.get_uncertainty() as u64)
     }
 
     async fn abort_fast_path(&mut self, key: ClientRequestKey) {
@@ -224,7 +234,7 @@ impl Proxy {
         let mut any_sent = false;
         for server in self.config.targets() {
             debug!(
-                "Fast path timeout for client {} command {}, sending slow-path abort to server {}",
+                "Fast path abort for client {} command {}, sending slow-path abort to server {}",
                 abort_msg.client_id, abort_msg.message.command_id(), server.id
             );
             self.network
@@ -234,22 +244,9 @@ impl Proxy {
         }
         if !any_sent {
             warn!(
-                "Fast path timeout for client {} command {}, but no servers configured to receive abort",
+                "Fast path abort for client {} command {}, but no servers configured to receive abort",
                 abort_msg.client_id, abort_msg.message.command_id()
             );
-        }
-    }
-
-    async fn handle_fast_path_timeouts(&mut self) {
-        let keys: Vec<ClientRequestKey> = self
-            .fast_path_deadlines
-            .keys()
-            .copied()
-            .collect();
-        for key in keys {
-            if self.should_abort_fast_path(key) {
-                self.abort_fast_path(key).await;
-            }
         }
     }
 
@@ -300,12 +297,6 @@ impl Proxy {
         if let Some(leader_reply) = self.can_commit(key) {
             self.telemetry.record_fast_path_commit(client_id, request_id);
             self.reply_to_client(leader_reply, key);
-            // Will send the commit message to all servers
-            self.send_commit_message(CommitMessage {
-                client_id,
-                command_id: request_id,
-            })
-            .await;
         }
     }
     
@@ -342,6 +333,13 @@ impl Proxy {
 
         // OmniPaxos already decided this entry (majority agreed); we only need the leader's result.
         if let Some(result) = state.result.take() {
+            // if the fast-path already committed this request,
+            // `pending` will have been cleared by `reply_to_client`.  Sending a
+            // second response would violate linearizability, so we discard it.
+            if !self.pending.contains_key(&key) {
+                self.slow_reply_sets.remove(&key);
+                return;
+            }
             self.telemetry.record_slow_path_commit(sr.client_id, sr.request_id);
             self.reply_sets.remove(&key);
             self.slow_reply_sets.remove(&key);
@@ -398,7 +396,7 @@ impl Proxy {
 
         if self.is_super_quorum(key) {
             if !self.logs_consistent(key) {
-                warn!(
+                debug!(
                     "Fast path: super quorum for {:?} but replicas have inconsistent log hashes, not committing",
                     key
                 );
@@ -413,6 +411,13 @@ impl Proxy {
                 // debug!("Log for {:?}: {:?}", key, self.reply_sets.get(&key).unwrap().replies);
                 return Some(leader);
             }
+        } else {
+            debug!(
+                "Not enough replies to commit {:?}: have {}, need {}",
+                key,
+                self.reply_sets.get(&key).map_or(0, |s| s.replies.len()),
+                self.get_super_quorum_size()
+            );
         }
         None
     }   
@@ -430,15 +435,6 @@ impl Proxy {
         self.fast_path_deadlines.remove(&key);
         self.aborted_fast_path.remove(&key);
         self.network.send_to_client(client_id, msg);
-    }
-
-    async fn send_commit_message(&mut self, commit_message: CommitMessage) {
-        let targets = self.config.targets();
-        for server in targets {
-            self.network
-                .send_to_server(server.id, ProxyMessage::Commit(commit_message.clone()))
-                .await;
-        }
     }
 
     fn update_client_deadline(&mut self, replica_id: NodeId, d: u64) -> Option<u64> {

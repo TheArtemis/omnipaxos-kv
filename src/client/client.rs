@@ -88,6 +88,10 @@ impl Client {
 
         // Main event loop
         info!("{}: Starting requests", self.id);
+        // Initialized once when all requests have been sent; fires after a
+        // grace period so we don't hang forever waiting for straggler responses.
+        let mut drain_sleep: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
+        const DRAIN_TIMEOUT: Duration = Duration::from_secs(15);
         loop {
             if self.config.use_proxy {
                 tokio::select! {
@@ -116,12 +120,26 @@ impl Client {
                                 request_interval = interval(new_interval.get_request_delay());
                             },
                             None => {
+                                if drain_sleep.is_none() {
+                                    drain_sleep = Some(Box::pin(tokio::time::sleep(DRAIN_TIMEOUT)));
+                                }
                                 self.final_request_count = Some(self.client_data.request_count());
                                 if self.run_finished() {
                                     break;
                                 }
                             },
                         }
+                    },
+                    _ = async {
+                        match &mut drain_sleep {
+                            Some(s) => s.as_mut().await,
+                            None => std::future::pending::<()>().await,
+                        }
+                    }, if drain_sleep.is_some() => {
+                        warn!("{}: drain timeout — {} of {} responses received; saving partial results",
+                            self.id, self.client_data.response_count(),
+                            self.final_request_count.unwrap_or(0));
+                        break;
                     },
                 }
             } else {
@@ -146,12 +164,26 @@ impl Client {
                                 request_interval = interval(new_interval.get_request_delay());
                             },
                             None => {
+                                if drain_sleep.is_none() {
+                                    drain_sleep = Some(Box::pin(tokio::time::sleep(DRAIN_TIMEOUT)));
+                                }
                                 self.final_request_count = Some(self.client_data.request_count());
                                 if self.run_finished() {
                                     break;
                                 }
                             },
                         }
+                    },
+                    _ = async {
+                        match &mut drain_sleep {
+                            Some(s) => s.as_mut().await,
+                            None => std::future::pending::<()>().await,
+                        }
+                    }, if drain_sleep.is_some() => {
+                        warn!("{}: drain timeout — {} of {} responses received; saving partial results",
+                            self.id, self.client_data.response_count(),
+                            self.final_request_count.unwrap_or(0));
+                        break;
                     },
                 }
             }
@@ -170,18 +202,34 @@ impl Client {
     }
 
     fn handle_server_message(&mut self, msg: ServerMessage) {
-        //debug!("Received {msg:?}");
         match msg {
             ServerMessage::StartSignal(_) => (),
-            server_response => {
-                let cmd_id = server_response.command_id();
-                self.client_data.new_response(cmd_id);
+            ServerMessage::Read(cmd_id, value) => {
+                self.client_data.new_response(cmd_id, value);
+            }
+            ServerMessage::Write(cmd_id) => {
+                self.client_data.new_response(cmd_id, None);
+            }
+            ServerMessage::FastReply(fr) => {
+                let value = fr.result.and_then(|r| match r {
+                    ServerResult::Read(_, v) => v,
+                    ServerResult::Write(_) => None,
+                });
+                self.client_data.new_response(fr.request_id, value);
+            }
+            ServerMessage::SlowPathReply(sr) => {
+                let value = sr.result.and_then(|r| match r {
+                    ServerResult::Read(_, v) => v,
+                    ServerResult::Write(_) => None,
+                });
+                self.client_data.new_response(sr.request_id, value);
             }
         }
     }
 
     async fn send_request(&mut self, is_write: bool) {
         let key = self.next_request_id.to_string();
+        let write_value = if is_write { Some(key.clone()) } else { None };
         let cmd = match is_write {
             true => KVCommand::Put(key.clone(), key.clone()),
             false => KVCommand::Get(key.clone()),
@@ -199,10 +247,8 @@ impl Client {
         } else {
             self.server_network.send(self.active_server, request).await;
         }
-        
 
-        // Update client data
-        self.client_data.new_request(is_write);
+        self.client_data.new_request(is_write, key, write_value);
         self.next_request_id += 1
     }
 
@@ -235,7 +281,21 @@ impl Client {
         self.client_data.save_summary(self.config.clone())?;
         self.client_data
             .to_csv(self.config.output_filepath.clone())?;
-        
+        let history_path = self.config.summary_filepath.replace("client-", "history-");
+        let client_id = self.config.summary_filepath
+            .chars()
+            .rev()
+            .skip(5) // skip ".json"
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect::<String>()
+            .parse::<u64>()
+            .unwrap_or(self.id as u64);
+        if let Err(e) = self.client_data.save_history(&history_path, client_id) {
+            log::warn!("Failed to write history file {}: {}", history_path, e);
+        }
         Ok(())
     }
 }
