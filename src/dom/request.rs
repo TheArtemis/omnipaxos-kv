@@ -1,4 +1,4 @@
-use crate::common::{kv::ClientId, log_hash::LogHash, messages::ClientMessage};
+use crate::common::{kv::ClientId, messages::ClientMessage};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 
@@ -9,8 +9,6 @@ pub struct DomMessage {
     pub message: ClientMessage,
     pub deadline: u64,
     pub send_time: u64,
-    #[serde(default)]
-    pub arrival_hash: LogHash,
 }
 
 impl PartialEq for DomMessage {
@@ -45,7 +43,6 @@ impl DomMessage {
             message,
             deadline,
             send_time,
-            arrival_hash: LogHash::default(),
         }
     }
 }
