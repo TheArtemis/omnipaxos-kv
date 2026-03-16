@@ -189,7 +189,12 @@ impl Proxy {
     }
 
     fn get_deadline(&self, send_time: u64, adaptive_deadline: u64) -> u64 {
-        adaptive_deadline + send_time
+        // Incorporate the current clock uncertainty (ε) explicitly in the deadline,
+        // following the Nezha-style formula D = send_time + max_r \hat{OWD}_{s,r} + ε.
+        let epsilon = self.clock.get_uncertainty() as u64;
+        send_time
+            .saturating_add(adaptive_deadline)
+            .saturating_add(epsilon)
     }
 
     fn get_fast_path_timeout(&self, deadline: u64, adaptive_deadline: u64) -> u64 {
