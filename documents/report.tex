@@ -156,7 +156,6 @@ Unfortunately the throughput is dependent on our containers and the connection w
       high\_quality      & 362 & 180 & 182 & 4.26 & 7.60 & 83.4 & 3.56 & 3.65 & PASS \\
       low\_quality       & 363 & 271 & 92 & 5.96 & 13.63 & 69.7 & 4.57 & 5.58 & PASS \\
       medium\_quality    & 362 & 274 & 88 & 3.88 & 8.14 & 79.6 & 3.43 & 4.49 & PASS \\
-      adaptive\_deadline & 364 & 274 & 90 & 4.46 & 9.71 & 77.7 & 3.59 & 4.69 & PASS \\
       clock\_skew        & 362 & 264 & 98 & 4.60 & 6.46 & 51.4 & 4.53 & 6.57 & PASS \\
       node\_failure      & 402 & 304 & 98 & 9.78 & 2014.19 & 2.0 & 5.77 & 8.49 & PASS \\
       \hline
@@ -192,15 +191,6 @@ With \emph{medium-quality} clocks, the system processes 362 operations (274 puts
   \caption{Latency and throughput for the medium-quality clock configuration.}
 \end{figure}
 
-\subsection{Adaptive Deadline}
-Under the \emph{adaptive deadline} configuration, the system processes 364 operations, with 274 puts and 90 gets. The median latency is 4.46\,ms and the 95th percentile is 9.71\,ms. The fast-path ratio is 77.7\%, with average fast-path and slow-path latencies of 3.59\,ms and 4.69\,ms, respectively. These values indicate that percentile-based OWD estimation sustains a high fast-path ratio while keeping both fast- and slow-path latency averages relatively low. Still we don't see a major improvement with respect to fixed deadline.
-
-\begin{figure}[h]
-  \centering
-  \includegraphics[width=0.8\textwidth]{data/adaptive_deadline/benchmark_results.png}
-  \caption{Latency and throughput for the adaptive deadline configuration.}
-\end{figure}
-
 \subsection{Clock Skew}
 The \emph{clock skew} test deliberately introduces skew between node clocks while keeping other parameters comparable. The system processes 362 operations (264 puts and 98 gets), with p50 latency at 4.60\,ms and p95 at 6.46\,ms. The fast-path ratio decreases to 51.4\%, and average latencies increase to 4.53\,ms on the fast path and 6.57\,ms on the slow path. This shows the expected degradation in fast-path usage under skew while preserving correct fallback behavior.
 
@@ -222,7 +212,32 @@ Finally, the \emph{node failure} configuration injects server failures with a ce
 \subsection{Global Comparison}
 Taken together, these results support the central hypothesis that clock quality and deadline selection have a strong impact on consensus performance. Configurations with better-synchronized clocks or well-chosen adaptive deadlines achieve higher fast-path ratios and lower p50/p95 latencies, with lower average latencies on both fast and slow paths. As clock quality degrades, or as skew and failures are introduced, the system falls back more frequently to the slow path and latency metrics worsen, especially p95, but without compromising linearizability. All configurations evaluated in this report passed linearizability checks, reinforcing the design principle that clocks are used solely to optimize performance while correctness is always enforced by the underlying consensus protocol.
 
+\section{Adaptive Deadline Evaluation}
+The adaptive deadline mechanism is implemented in two stages. First, each server estimates one-way delay (OWD) from the proxy by maintaining a sliding window of delay samples in the \texttt{Owd} structure. For every fast reply, the server computes a new delay sample and feeds it into the window associated with the proxy node. The \texttt{Owd} module then selects a configurable percentile from the window, providing a scalar estimate of the current OWD for that replica. This estimate is exported in the \texttt{deadline\_length} field of \texttt{FastReply} and \texttt{SlowPathReply} messages.
 
+Second, the proxy aggregates these per-replica estimates across replies. For each replica, it stores the most recent \texttt{deadline\_length} in a per-node map and maintains the maximum value over all replicas. When computing a deadline for a new client request, the proxy queries its clock simulator for the current time and uncertainty, and then uses the formula
+\[
+D = \text{send\_time} + \max_r \widehat{OWD}_{s,r} + \epsilon,
+\]
+where \(\widehat{OWD}_{s,r}\) is the most recent percentile estimate from replica \(r\) and \(\epsilon\) is the current uncertainty bound from \texttt{ClockSim}. The resulting deadline is attached to the \texttt{DomMessage} for that request, and the fast-path timeout is derived from the same adaptive estimate. This design closely follows Nezha's idea of combining per-replica OWD estimates with a global uncertainty term while remaining simple to integrate into the existing OmniPaxos-KV codebase.
+
+Comparing the \emph{medium-quality} and \emph{adaptive deadline} experiments highlights the benefits and limitations of this mechanism. Under medium-quality clocks without adaptation, we obtain a fast-path ratio of 79.6\%, p50/p95 latencies of 3.88\,ms and 8.14\,ms, and average fast/slow-path latencies of 3.43\,ms and 4.49\,ms. With adaptive deadlines enabled, the fast-path ratio is similar at 77.7\%, and p50/p95 latencies are 4.46\,ms and 9.71\,ms, while average fast/slow-path latencies are 3.59\,ms and 4.69\,ms. In other words, the simple per-replica percentile estimator we implemented keeps performance close to the medium-quality baseline but does not yield a dramatic improvement in fast-path usage or tail latency. We attribute this to two factors: the relatively small cluster size (three replicas) and the fact that clock quality is already good enough that fixed deadlines work reasonably well. More aggressive percentile choices or larger, more heterogeneous deployments could make adaptive deadlines more beneficial.
+
+\begin{table}[h]
+  \centering
+  \small
+  \resizebox{0.85\textwidth}{!}{%
+    \begin{tabular}{l r r r r r r r}
+      \hline
+      Config & Ops & Fast-path [\%] & p50 [ms] & p95 [ms] & Avg fast [ms] & Avg slow [ms] & Lin. \\
+      \hline
+      medium\_quality    & 362 & 79.6 & 3.88 & 8.14 & 3.43 & 4.49 & PASS \\
+      adaptive\_deadline & 364 & 77.7 & 4.46 & 9.71 & 3.59 & 4.69 & PASS \\
+      \hline
+    \end{tabular}
+  }
+  \caption{Side-by-side comparison of medium-quality clocks with fixed deadlines and adaptive deadlines based on per-replica OWD estimates.}
+\end{table}
 
 \section{Future Work}
 There are several directions in which this work could be extended. First, our adaptive deadline mechanism uses a relatively simple percentile-based OWD estimator per node. Future work could explore more sophisticated estimators that account for correlations between paths, time-of-day effects, or sudden network changes, and that consider different percentiles depending on workload or service-level objectives. It would also be interesting to validate these mechanisms against real-world clock-synchronization protocols rather than simulated clocks.
