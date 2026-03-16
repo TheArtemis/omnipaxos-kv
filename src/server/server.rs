@@ -480,7 +480,7 @@ impl OmniPaxosServer {
     async fn handle_proxy_messages(&mut self, messages: &mut Vec<ProxyMessage>) {
         for proxy_msg in messages.drain(..) {
             match proxy_msg {
-                ProxyMessage::Append(mut dom_message) => {
+                ProxyMessage::Append(dom_message) => {
                     if self.config.local.use_proxy {
                         match &dom_message.message {
                             ClientMessage::Append(command_id, _) => {
@@ -489,7 +489,6 @@ impl OmniPaxosServer {
                             }
                         }
                     }
-                    dom_message.arrival_hash = self.log_hash.clone();
                     let message_passing_delay = self.dom.get_time() - dom_message.send_time; // TODO: what about uncertainty here?
                     self.dom
                         .add_element_to_owd(DEFAULT_NODE_ID, message_passing_delay);
